@@ -1,0 +1,1375 @@
+import 'dart:async';
+import 'dart:io';
+import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../theme/app_theme.dart';
+import '../services/ondevice_quality_service.dart';
+import '../models/capture_mode.dart';
+
+class FingerprintCameraWidget extends StatefulWidget {
+  final void Function(File) onImageCaptured;
+  final bool disabled;
+  final CaptureMode mode;
+  final String overlayStyle;
+  final String handSide;
+  const FingerprintCameraWidget({
+    super.key,
+    required this.onImageCaptured,
+    this.disabled = false,
+    this.mode = CaptureMode.single,
+    this.overlayStyle = 'oval',
+    this.handSide = 'right',
+  });
+
+  @override
+  State<FingerprintCameraWidget> createState() =>
+      _FingerprintCameraWidgetState();
+}
+
+class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
+    with WidgetsBindingObserver, SingleTickerProviderStateMixin {
+  CameraController? _ctrl;
+  CameraLensDirection _lensDirection = CameraLensDirection.front;
+  bool _initializing = false;
+  bool _live = false;
+  bool _flashing = false;
+  bool _torchOn = false;
+  bool _autoFlashOn = false;
+  File? _captured;
+  String? _error;
+  double _minZoom = 1.0, _maxZoom = 1.0, _zoom = 2.0;
+  Offset? _focusPt;
+  Timer? _focusTimer;
+
+  static const Duration _focusSettleDelay = Duration(milliseconds: 700);
+
+  final bool _autoCapture = false;
+  bool _pollInFlight = false;
+  bool _capturing = false;
+  bool _pollActive = false;
+  String _roiGuidance = '';
+  String _guidance = 'Place finger in the oval';
+  Color _guidanceColor = Colors.white60;
+  double _qualityScore = 0.0;
+  int _passCount = 0;
+
+  DateTime? _lastPassTime;
+  static const Duration _maxPassGap = Duration(seconds: 3);
+
+  int _pollAttempts = 0;
+  static const int _maxPollAttempts = 40;
+
+  static const int _passesNeeded = 2;
+  static const Duration _pollCooldown = Duration(milliseconds: 250);
+
+  File? _lastGoodFrame;
+  bool _tipsVisible = true;
+
+  static const double _autoFlashThreshold = 60.0;
+  static const double _autoFlashRecoverThreshold = 90.0;
+
+  late AnimationController _scanCtrl;
+  late Animation<double> _scanAnim;
+
+  bool get _isSlap => widget.mode == CaptureMode.slap;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _scanCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat(reverse: true);
+    _scanAnim = Tween<double>(
+      begin: 0,
+      end: 1,
+    ).animate(CurvedAnimation(parent: _scanCtrl, curve: Curves.easeInOut));
+    _guidance =
+        _isSlap ? 'Place your hand in view' : 'Place finger in the oval';
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _focusTimer?.cancel();
+    _scanCtrl.dispose();
+    _killPollLoop();
+    _ctrl?.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused) {
+      _killPollLoop();
+      _ctrl?.dispose();
+      _ctrl = null;
+      if (mounted) {
+        setState(() {
+          _live = false;
+          _torchOn = false;
+          _autoFlashOn = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _startCamera() async {
+    if (widget.disabled || _initializing || _live) return;
+    setState(() {
+      _initializing = true;
+      _error = null;
+    });
+    try {
+      final status = await Permission.camera.status;
+      if (!status.isGranted) {
+        final result = await Permission.camera.request();
+        if (!result.isGranted) {
+          if (mounted) {
+            setState(() {
+              _initializing = false;
+              _error =
+                  'Camera permission denied. Enable it in Settings to continue.';
+            });
+          }
+          return;
+        }
+      }
+
+      final cams = await availableCameras();
+      if (cams.isEmpty) throw Exception('No camera found');
+      final cam = cams.firstWhere(
+        (c) => c.lensDirection == _lensDirection,
+        orElse: () => cams.first,
+      );
+
+      await _ctrl?.dispose();
+      _ctrl = CameraController(
+        cam,
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
+      await _ctrl!.initialize();
+      try {
+        await _ctrl!.setFocusMode(FocusMode.auto);
+        await _ctrl!.setExposureMode(ExposureMode.auto);
+      } catch (_) {}
+      try {
+        _minZoom = await _ctrl!.getMinZoomLevel();
+        _maxZoom = await _ctrl!.getMaxZoomLevel();
+      } catch (_) {
+        _minZoom = 1.0;
+        _maxZoom = 1.0;
+      }
+
+      if (_zoom < _minZoom || _zoom > _maxZoom) {
+        _zoom = (2.0).clamp(_minZoom, _maxZoom);
+      }
+      try {
+        await _ctrl!.setZoomLevel(_zoom);
+      } catch (_) {}
+      try {
+        await _ctrl!.setFlashMode(FlashMode.off);
+      } catch (_) {}
+
+      if (!mounted) return;
+      setState(() {
+        _live = true;
+        _initializing = false;
+      });
+
+      if (_autoCapture) {
+        await Future.delayed(_focusSettleDelay);
+        if (mounted && _live) _kickPollLoop();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _initializing = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _stopCamera() async {
+    _killPollLoop();
+    if (_torchOn) {
+      try {
+        await _ctrl?.setFlashMode(FlashMode.off);
+      } catch (_) {}
+    }
+    await _ctrl?.dispose();
+    _ctrl = null;
+    if (mounted) {
+      setState(() {
+        _live = false;
+        _torchOn = false;
+        _autoFlashOn = false;
+        _captured = null;
+        _capturing = false;
+        _pollInFlight = false;
+        _roiGuidance = '';
+        _passCount = 0;
+        _qualityScore = 0.0;
+        _lastGoodFrame = null;
+        _lastPassTime = null;
+        _pollAttempts = 0;
+        _guidance =
+            _isSlap ? 'Place your hand in view' : 'Place finger in the oval';
+        _guidanceColor = Colors.white60;
+        _focusing = false;
+        _tipsVisible = true;
+      });
+    }
+  }
+
+  Future<void> _toggleTorch() async {
+    if (_ctrl == null) return;
+    try {
+      if (_torchOn) {
+        await _ctrl!.setFlashMode(FlashMode.off);
+        if (mounted) {
+          setState(() {
+            _torchOn = false;
+            _autoFlashOn = false;
+          });
+        }
+      } else {
+        await _ctrl!.setFlashMode(FlashMode.torch);
+        if (mounted) {
+          setState(() {
+            _torchOn = true;
+            _autoFlashOn = false;
+          });
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _setAutoFlash(bool enable) async {
+    if (_ctrl == null || _autoFlashOn == enable) return;
+    try {
+      await _ctrl!.setFlashMode(enable ? FlashMode.torch : FlashMode.off);
+      if (mounted) {
+        setState(() {
+          _autoFlashOn = enable;
+          _torchOn = enable;
+        });
+      }
+    } catch (_) {}
+  }
+
+  bool _focusing = false;
+
+  Future<void> _onTap(TapDownDetails d, BoxConstraints c) async {
+    if (_ctrl == null || !_live) return;
+    final x = (d.localPosition.dx / c.maxWidth).clamp(0.0, 1.0);
+    final y = (d.localPosition.dy / c.maxHeight).clamp(0.0, 1.0);
+
+    if (mounted) {
+      setState(() {
+        _focusPt = d.localPosition;
+        _focusing = true;
+      });
+    }
+    try {
+      HapticFeedback.lightImpact();
+    } catch (_) {}
+
+    _focusTimer?.cancel();
+    _focusTimer = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) {
+        setState(() {
+          _focusPt = null;
+          _focusing = false;
+        });
+      }
+    });
+    try {
+      await _ctrl!.setFocusPoint(Offset(x, y));
+      await _ctrl!.setExposurePoint(Offset(x, y));
+    } catch (_) {}
+  }
+
+  Future<File?> _stableFile(File src) async {
+    try {
+      final dir = Directory.systemTemp;
+      final dest = File(
+        '${dir.path}/ys_fp_${DateTime.now().millisecondsSinceEpoch}.jpg',
+      );
+      return await src.copy(dest.path);
+    } catch (_) {
+      return src;
+    }
+  }
+
+  Future<void> _commitCapture() async {
+    if (_capturing || _lastGoodFrame == null) return;
+    _capturing = true;
+    _killPollLoop();
+    await _setAutoFlash(false);
+
+    final stable = await _stableFile(_lastGoodFrame!);
+    if (stable == null) {
+      if (mounted) {
+        setState(() {
+          _capturing = false;
+          _error = 'Capture file missing — retake';
+        });
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() => _flashing = true);
+      await Future.delayed(const Duration(milliseconds: 80));
+      if (!mounted) return;
+      setState(() {
+        _flashing = false;
+        _captured = stable;
+        _live = false;
+      });
+      widget.onImageCaptured(stable);
+    }
+  }
+
+  Future<void> _captureFresh() async {
+    if (_ctrl == null || !_ctrl!.value.isInitialized || _capturing) return;
+    _capturing = true;
+    _killPollLoop();
+    await _setAutoFlash(false);
+    if (mounted) setState(() => _flashing = true);
+    await Future.delayed(const Duration(milliseconds: 80));
+    if (!mounted) return;
+    setState(() => _flashing = false);
+    try {
+      final xf = await _ctrl!.takePicture();
+      final stable = await _stableFile(File(xf.path));
+      if (!mounted) return;
+      if (stable != null) {
+        setState(() {
+          _captured = stable;
+          _live = false;
+        });
+        widget.onImageCaptured(stable);
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = 'Capture failed: $e';
+          _capturing = false;
+        });
+        if (_autoCapture) _kickPollLoop();
+      }
+    }
+  }
+
+  void _useImage() {
+    if (_captured != null) widget.onImageCaptured(_captured!);
+  }
+
+  Future<void> _retry() async {
+    setState(() {
+      _captured = null;
+      _live = false;
+      _capturing = false;
+      _pollInFlight = false;
+      _roiGuidance = '';
+      _passCount = 0;
+      _qualityScore = 0.0;
+      _lastGoodFrame = null;
+      _lastPassTime = null;
+      _pollAttempts = 0;
+      _error = null;
+      _tipsVisible = true;
+      _guidance =
+          _isSlap ? 'Place your hand in view' : 'Place finger in the oval';
+      _guidanceColor = Colors.white60;
+    });
+    await _startCamera();
+  }
+
+  void _kickPollLoop() {
+    if (_pollActive) return;
+    _pollActive = true;
+    _pollInFlight = false;
+    _passCount = 0;
+    _lastGoodFrame = null;
+    _lastPassTime = null;
+    _pollAttempts = 0;
+    _roiGuidance = '';
+    Future.microtask(_pollOnce);
+  }
+
+  void _killPollLoop() {
+    _pollActive = false;
+    _pollInFlight = false;
+  }
+
+  Future<void> _pollOnce() async {
+    if (!_pollActive || !_live || _capturing || _captured != null) return;
+    if (_ctrl == null || !_ctrl!.value.isInitialized) return;
+    if (_pollInFlight) return;
+
+    if (_pollAttempts >= _maxPollAttempts) {
+      if (mounted) {
+        setState(() {
+          _guidance = 'Switch to MANUAL — auto not detecting';
+          _guidanceColor = Colors.white38;
+        });
+      }
+      _pollActive = false;
+      return;
+    }
+
+    _pollInFlight = true;
+    _pollAttempts++;
+
+    try {
+      final xf = await _ctrl!.takePicture();
+      final file = File(xf.path);
+
+      if (!_pollActive || _capturing) return;
+
+      final Uint8List fileBytes = await file.readAsBytes();
+
+      // On-Device Fast Evaluation (Sub-20ms execution)
+      final localQuality = OnDeviceQualityService.evaluateYPlane(
+        yPlaneBytes: fileBytes,
+        width: 1080,
+        height: 1920,
+        bytesPerRow: 1080,
+      );
+
+      final passed = localQuality.isPassed;
+      final guidance = localQuality.guidanceText;
+      final score = localQuality.readinessScore / 100.0;
+
+      if (!_autoFlashOn &&
+          localQuality.tooDark &&
+          localQuality.brightness < _autoFlashThreshold) {
+        await _setAutoFlash(true);
+      } else if (_autoFlashOn &&
+          localQuality.brightness > _autoFlashRecoverThreshold &&
+          !localQuality.tooDark) {
+        await _setAutoFlash(false);
+      }
+
+      if (mounted) {
+        setState(() {
+          _guidance = passed ? '✓ Good — hold still' : guidance;
+          _guidanceColor = passed ? YS.amber : Colors.orangeAccent;
+          _qualityScore = score;
+          _roiGuidance =
+              (!localQuality.isRoiAligned)
+                  ? 'Position finger inside the target oval'
+                  : '';
+        });
+      }
+
+      if (passed) {
+        final now = DateTime.now();
+        if (_lastPassTime != null &&
+            now.difference(_lastPassTime!) > _maxPassGap) {
+          _passCount = 0;
+        }
+        _lastPassTime = now;
+        _lastGoodFrame = file;
+        _passCount++;
+        if (_tipsVisible && mounted) setState(() => _tipsVisible = false);
+
+        if (_passCount >= _passesNeeded && _pollActive && !_capturing) {
+          _pollInFlight = false;
+          await _commitCapture();
+          return;
+        }
+      } else {
+        _passCount = 0;
+        _lastGoodFrame = null;
+        _lastPassTime = null;
+      }
+    } catch (_) {
+      if (mounted && _pollActive) {
+        setState(() {
+          _guidance = 'Auto-check unavailable — tap MANUAL';
+          _guidanceColor = Colors.white38;
+        });
+      }
+    } finally {
+      _pollInFlight = false;
+    }
+
+    _scheduleNextPoll();
+  }
+
+  void _scheduleNextPoll() {
+    if (!_pollActive) return;
+    Future.delayed(_pollCooldown, () {
+      if (_pollActive && !_capturing && _captured == null) _pollOnce();
+    });
+  }
+
+  IconData _roiGuidanceIcon(String guidance) {
+    final g = guidance.toLowerCase();
+    if (g.contains('left')) return Icons.arrow_back_rounded;
+    if (g.contains('right')) return Icons.arrow_forward_rounded;
+    if (g.contains('up') || g.contains('higher')) {
+      return Icons.arrow_upward_rounded;
+    }
+    if (g.contains('down') || g.contains('lower')) {
+      return Icons.arrow_downward_rounded;
+    }
+    if (g.contains('closer') || g.contains('near')) {
+      return Icons.zoom_in_rounded;
+    }
+    if (g.contains('further') || g.contains('far')) {
+      return Icons.zoom_out_rounded;
+    }
+    return Icons.open_with_rounded;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: YS.card,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: YS.stroke),
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: Column(children: [_header(), _viewfinder(), _controls()]),
+    );
+  }
+
+  Future<void> _switchCamera() async {
+    if (_initializing) return;
+    final nextDirection =
+        _lensDirection == CameraLensDirection.back
+            ? CameraLensDirection.front
+            : CameraLensDirection.back;
+    _lensDirection = nextDirection;
+    await _stopCamera();
+    await _startCamera();
+  }
+
+  Widget _header() => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+    decoration: const BoxDecoration(
+      color: YS.card,
+      border: Border(bottom: BorderSide(color: YS.stroke)),
+    ),
+    child: Row(
+      children: [
+        Flexible(
+          child: Text(
+            _isSlap ? 'SLAP CAPTURE' : 'FINGERPRINT',
+            overflow: TextOverflow.ellipsis,
+            style: YS
+                .label(10, color: YS.amber, w: FontWeight.w800)
+                .copyWith(letterSpacing: 1.0),
+          ),
+        ),
+        const SizedBox(width: 4),
+        if (_live)
+          GestureDetector(
+            onTap: _switchCamera,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                color: YS.cardAlt,
+                border: Border.all(color: YS.stroke),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.cameraswitch_rounded, size: 12, color: YS.amber),
+                  const SizedBox(width: 3),
+                  Text(
+                    _lensDirection == CameraLensDirection.front
+                        ? 'FRONT'
+                        : 'BACK',
+                    style: YS.label(8, color: YS.inkMid, w: FontWeight.w700),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (_live) const SizedBox(width: 4),
+        if (_live)
+          GestureDetector(
+            onTap: _toggleTorch,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: _torchOn ? YS.amber : YS.stroke),
+                color: _torchOn ? YS.amberSoft : YS.cardAlt,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _torchOn ? Icons.flash_on : Icons.flash_off,
+                    size: 11,
+                    color: _torchOn ? YS.amberDeep : YS.inkLight,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    _autoFlashOn
+                        ? 'AUTO'
+                        : _torchOn
+                        ? 'ON'
+                        : 'OFF',
+                    style: YS.label(
+                      8,
+                      color: _torchOn ? YS.amberDeep : YS.inkLight,
+                      w: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+
+  Widget _viewfinder() => LayoutBuilder(
+    builder: (context, constraints) {
+      final viewW = constraints.maxWidth;
+      final viewH = viewW * 4 / 3;
+      return SizedBox(
+        width: viewW,
+        height: viewH,
+        child: Container(
+          color: const Color(0xFF1A1A1A),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_live && _ctrl != null && _ctrl!.value.isInitialized)
+                GestureDetector(
+                  onTapDown: (d) => _onTap(d, constraints),
+                  child: CameraPreview(_ctrl!),
+                ),
+
+              if (_captured != null) Image.file(_captured!, fit: BoxFit.cover),
+
+              if (!_live && !_initializing && _captured == null)
+                Container(
+                  color: const Color(0xFF1A1A1A),
+                  child: Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 72,
+                          height: 72,
+                          decoration: BoxDecoration(
+                            color: YS.amber.withValues(alpha: 0.12),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            _isSlap
+                                ? Icons.back_hand_rounded
+                                : Icons.fingerprint_rounded,
+                            size: 40,
+                            color: YS.amber,
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          'Tap "Start Camera" below',
+                          style: YS.label(
+                            12,
+                            color: Colors.white38,
+                            w: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+              if (_initializing)
+                Container(
+                  color: const Color(0xFF1A1A1A),
+                  child: const Center(
+                    child: CircularProgressIndicator(
+                      color: YS.amber,
+                      strokeWidth: 2,
+                    ),
+                  ),
+                ),
+
+              if ((_live || _captured != null) && widget.overlayStyle != 'none')
+                CustomPaint(
+                  painter:
+                      widget.overlayStyle == 'slap'
+                          ? _SlapOverlayPainter(YS.amber, widget.handSide)
+                          : _OverlayPainter(YS.amber),
+                ),
+
+              if (_live && _autoCapture && widget.overlayStyle != 'none')
+                AnimatedBuilder(
+                  animation: _scanAnim,
+                  builder:
+                      (context, child) => Positioned(
+                        top: _scanAnim.value * (viewH * 0.6),
+                        left: viewW * 0.18,
+                        right: viewW * 0.18,
+                        child: Container(
+                          height: 2,
+                          decoration: const BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [
+                                Colors.transparent,
+                                YS.amber,
+                                Colors.transparent,
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                ),
+
+              if (_focusPt != null)
+                Positioned(
+                  left: _focusPt!.dx - 25,
+                  top: _focusPt!.dy - 25,
+                  child: Container(
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: YS.amber, width: 2),
+                    ),
+                  ),
+                ),
+
+              if (_flashing)
+                Container(color: Colors.white.withValues(alpha: 0.8)),
+
+              if (_live && _autoCapture)
+                Positioned(
+                  top: 12,
+                  left: 16,
+                  right: 16,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'QUALITY',
+                            style: YS
+                                .label(
+                                  9,
+                                  color: Colors.white54,
+                                  w: FontWeight.w700,
+                                )
+                                .copyWith(letterSpacing: 1.5),
+                          ),
+                          Row(
+                            children: List.generate(
+                              _passesNeeded,
+                              (i) => Container(
+                                width: 7,
+                                height: 7,
+                                margin: const EdgeInsets.only(left: 4),
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color:
+                                      i < _passCount
+                                          ? YS.amber
+                                          : Colors.white.withValues(
+                                            alpha: 0.25,
+                                          ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: _qualityScore,
+                          minHeight: 4,
+                          backgroundColor: Colors.white.withValues(alpha: 0.15),
+                          color:
+                              _qualityScore > 0.7
+                                  ? YS.amber
+                                  : _qualityScore > 0.4
+                                  ? Colors.orangeAccent
+                                  : Colors.redAccent,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+              if (_autoFlashOn && _live)
+                Positioned(
+                  top: 56,
+                  left: 16,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    decoration: BoxDecoration(
+                      color: YS.amber.withValues(alpha: 0.85),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        Icon(Icons.flash_auto, size: 10, color: Colors.black),
+                        SizedBox(width: 3),
+                        Text(
+                          'AUTO FLASH ON',
+                          style: TextStyle(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.black,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+              if (_live || _captured != null)
+                Positioned(
+                  bottom: 14,
+                  left: 16,
+                  right: 16,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_roiGuidance.isNotEmpty && _live && _autoCapture)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 7,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.75),
+                            borderRadius: BorderRadius.circular(22),
+                            border: Border.all(
+                              color: Colors.orangeAccent.withValues(alpha: 0.5),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _roiGuidanceIcon(_roiGuidance),
+                                size: 15,
+                                color: Colors.orangeAccent,
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                _roiGuidance,
+                                style: YS.label(
+                                  12,
+                                  color: Colors.orangeAccent,
+                                  w: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      if (_focusing && _live)
+                        Container(
+                          margin: const EdgeInsets.only(bottom: 6),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const SizedBox(
+                                width: 10,
+                                height: 10,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.5,
+                                  color: YS.amber,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Focusing…',
+                                style: YS.label(
+                                  11,
+                                  color: YS.amber,
+                                  w: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      if (_live)
+                        Text(
+                          _guidance,
+                          textAlign: TextAlign.center,
+                          style: YS.label(
+                            11,
+                            color: _guidanceColor,
+                            w: FontWeight.w500,
+                          ),
+                        ),
+                      if (_captured != null)
+                        Text(
+                          '✓  Image captured',
+                          textAlign: TextAlign.center,
+                          style: YS.label(
+                            11,
+                            color: YS.amber,
+                            w: FontWeight.w500,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+
+  Widget _controls() => Container(
+    color: YS.card,
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      children: [
+        if (_maxZoom > _minZoom + 0.1 && _live)
+          Row(
+            children: [
+              const Icon(Icons.zoom_out, size: 14, color: YS.inkLight),
+              Expanded(
+                child: Slider(
+                  value: _zoom.clamp(_minZoom, _maxZoom.clamp(_minZoom, 5.0)),
+                  min: _minZoom,
+                  max: _maxZoom.clamp(_minZoom, 5.0),
+                  activeColor: YS.amber,
+                  inactiveColor: YS.stroke,
+                  thumbColor: YS.amber,
+                  onChanged: (v) async {
+                    setState(() => _zoom = v);
+                    try {
+                      await _ctrl?.setZoomLevel(v);
+                    } catch (_) {}
+                  },
+                ),
+              ),
+              const Icon(Icons.zoom_in, size: 14, color: YS.inkLight),
+              const SizedBox(width: 4),
+              Text(
+                '${_zoom.toStringAsFixed(1)}×',
+                style: YS.label(10, color: YS.inkLight),
+              ),
+            ],
+          ),
+
+        if (_live && _captured == null && _tipsVisible) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: YS.cardAlt,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: YS.stroke),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'Tips for best capture',
+                      style: YS
+                          .label(11, color: YS.inkMid, w: FontWeight.w700)
+                          .copyWith(letterSpacing: 0.3),
+                    ),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: () => setState(() => _tipsVisible = false),
+                      child: const Icon(
+                        Icons.close_rounded,
+                        size: 14,
+                        color: YS.inkLight,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                _tip(
+                  Icons.touch_app_rounded,
+                  'Tap anywhere on the preview to refocus',
+                ),
+                _tip(
+                  Icons.flash_auto_rounded,
+                  'Low light? Auto-flash activates automatically; tap ⚡ for manual',
+                ),
+                _tip(
+                  Icons.zoom_in_rounded,
+                  _isSlap
+                      ? 'Use zoom slider so all four fingers fill the slots'
+                      : 'Use zoom slider to fill the oval with your finger — 2–3× works best',
+                ),
+                _tip(
+                  Icons.pan_tool_rounded,
+                  _isSlap
+                      ? 'Hold your hand steady and flat, fingers slightly apart'
+                      : 'Follow the arrows to centre your finger in the oval',
+                ),
+              ],
+            ),
+          ),
+        ],
+
+        if (!_live && !_initializing && _captured == null)
+          _btn(
+            'Start Camera',
+            _startCamera,
+            true,
+            icon: Icons.camera_alt_rounded,
+          ),
+
+        if (_initializing)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            decoration: BoxDecoration(
+              color: YS.amberSoft,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: YS.amberDeep,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  'Starting camera…',
+                  style: YS.label(13, color: YS.amberDeep, w: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+
+        if (_live && !_autoCapture)
+          Row(
+            children: [
+              Expanded(
+                child: _btn(
+                  'Capture',
+                  _captureFresh,
+                  true,
+                  icon: Icons.camera_rounded,
+                ),
+              ),
+              const SizedBox(width: 10),
+              _btn('✕', _stopCamera, false, square: true),
+            ],
+          ),
+
+        if (_live && _autoCapture)
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  decoration: BoxDecoration(
+                    color: YS.amberSoft,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: YS.amber.withValues(alpha: 0.4)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: YS.amberDeep,
+                          value:
+                              _passCount > 0
+                                  ? _passCount / _passesNeeded
+                                  : null,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        _passCount > 0
+                            ? 'Hold still… $_passCount/$_passesNeeded'
+                            : 'Scanning quality…',
+                        style: YS.label(
+                          13,
+                          color: YS.amberDeep,
+                          w: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              _btn('✕', _stopCamera, false, square: true),
+            ],
+          ),
+
+        if (_captured != null)
+          Row(
+            children: [
+              Expanded(
+                child: _btn(
+                  'Use This Image',
+                  _useImage,
+                  true,
+                  icon: Icons.check_rounded,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _btn(
+                  'Retake',
+                  _retry,
+                  false,
+                  icon: Icons.refresh_rounded,
+                ),
+              ),
+            ],
+          ),
+
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          GestureDetector(
+            onTap:
+                _error!.contains('Settings') ? () => openAppSettings() : null,
+            child: Text(
+              _error!,
+              style: const TextStyle(
+                color: YS.red,
+                fontSize: 11,
+                decoration: TextDecoration.underline,
+              ),
+            ),
+          ),
+        ],
+      ],
+    ),
+  );
+
+  Widget _tip(IconData icon, String text) => Padding(
+    padding: const EdgeInsets.only(top: 4),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 12, color: YS.amber),
+        const SizedBox(width: 6),
+        Expanded(child: Text(text, style: YS.label(11, color: YS.inkLight))),
+      ],
+    ),
+  );
+
+  Widget _btn(
+    String label,
+    VoidCallback onTap,
+    bool primary, {
+    bool square = false,
+    IconData? icon,
+  }) => GestureDetector(
+    onTap: widget.disabled ? null : onTap,
+    child: Container(
+      width: square ? 48 : null,
+      padding: EdgeInsets.symmetric(horizontal: square ? 0 : 14, vertical: 13),
+      decoration: BoxDecoration(
+        color: primary ? YS.amber : YS.cardAlt,
+        borderRadius: BorderRadius.circular(12),
+        border: primary ? null : Border.all(color: YS.stroke),
+      ),
+      child:
+          square
+              ? Center(
+                child: Text(
+                  label,
+                  textAlign: TextAlign.center,
+                  style: YS.label(
+                    13,
+                    color: primary ? Colors.black : YS.inkMid,
+                    w: FontWeight.w700,
+                  ),
+                ),
+              )
+              : Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  if (icon != null) ...[
+                    Icon(
+                      icon,
+                      size: 14,
+                      color: primary ? Colors.black : YS.inkMid,
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  Text(
+                    label,
+                    style: YS.label(
+                      13,
+                      color: primary ? Colors.black : YS.inkMid,
+                      w: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+    ),
+  );
+}
+
+class _OverlayPainter extends CustomPainter {
+  final Color color;
+  const _OverlayPainter(this.color);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2, cy = size.height / 2;
+    final rx = size.width * 0.23, ry = size.height * 0.25;
+    final oval = Rect.fromCenter(
+      center: Offset(cx, cy),
+      width: rx * 2,
+      height: ry * 2,
+    );
+    canvas.drawPath(
+      Path()
+        ..addRect(Rect.fromLTWH(0, 0, size.width, size.height))
+        ..addOval(oval)
+        ..fillType = PathFillType.evenOdd,
+      Paint()..color = const Color(0xFF050505).withValues(alpha: 0.65),
+    );
+    canvas.drawOval(
+      oval,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
+    );
+    canvas.drawOval(
+      oval,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_OverlayPainter old) => old.color != color;
+}
+
+class _SlapOverlayPainter extends CustomPainter {
+  final Color color;
+  final String handSide;
+  const _SlapOverlayPainter(this.color, this.handSide);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width, h = size.height;
+    final fingerW = w * 0.15;
+    final gap = w * 0.047;
+    final startX = (w - (4 * fingerW + 3 * gap)) / 2;
+    final knuckleY = h * 0.80;
+
+    final lengths =
+        handSide == 'left'
+            ? <double>[0.50, 0.58, 0.52, 0.40]
+            : <double>[0.40, 0.52, 0.58, 0.50];
+
+    final slots = <RRect>[];
+    for (var i = 0; i < 4; i++) {
+      final x = startX + i * (fingerW + gap);
+      final top = knuckleY - lengths[i] * h;
+      slots.add(
+        RRect.fromRectAndCorners(
+          Rect.fromLTRB(x, top, x + fingerW, knuckleY),
+          topLeft: Radius.circular(fingerW * 0.5),
+          topRight: Radius.circular(fingerW * 0.5),
+          bottomLeft: Radius.circular(fingerW * 0.22),
+          bottomRight: Radius.circular(fingerW * 0.22),
+        ),
+      );
+    }
+
+    final scrim = Path()..addRect(Rect.fromLTWH(0, 0, w, h));
+    for (final s in slots) {
+      scrim.addRRect(s);
+    }
+    scrim.fillType = PathFillType.evenOdd;
+    canvas.drawPath(
+      scrim,
+      Paint()..color = const Color(0xFF050505).withValues(alpha: 0.62),
+    );
+
+    final glow =
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
+    final line =
+        Paint()
+          ..color = color
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.3;
+    for (final s in slots) {
+      canvas.drawRRect(s, glow);
+      canvas.drawRRect(s, line);
+    }
+
+    final tp = TextPainter(
+      text: TextSpan(
+        text: 'Align fingers in the slots',
+        style: TextStyle(
+          color: color.withValues(alpha: 0.9),
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.4,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: w);
+    tp.paint(canvas, Offset((w - tp.width) / 2, h * 0.06));
+  }
+
+  @override
+  bool shouldRepaint(_SlapOverlayPainter old) =>
+      old.color != color || old.handSide != handSide;
+}

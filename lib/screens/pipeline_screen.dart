@@ -1,0 +1,369 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../theme/app_theme.dart';
+import '../widgets/fingerprint_camera_widget.dart';
+import '../services/api_service.dart';
+
+class PipelineScreen extends StatefulWidget {
+  const PipelineScreen({super.key});
+  @override
+  State<PipelineScreen> createState() => _PipelineScreenState();
+}
+
+class _PipelineScreenState extends State<PipelineScreen> {
+  bool _loading = false;
+  Map<String, dynamic>? _result;
+
+  // Pipeline step definitions — order matters
+  static const _steps = [
+    _Step('1', 'Original',      'Raw image from camera',                    Icons.camera_alt_rounded),
+    _Step('2', 'YOLO Crop',     'Finger detected & cropped',                Icons.crop_rounded),
+    _Step('3', 'Preprocessed',  'U²Net → ZeroDCE → Threshold → ROI',       Icons.auto_fix_high_rounded),
+    _Step('4', 'Minutiae',      'Ridge endings & bifurcations extracted',   Icons.scatter_plot_rounded),
+  ];
+
+  Future<void> _run(File image) async {
+    setState(() { _loading = true; _result = null; });
+    try {
+      final r = await ApiService.process(image);
+      setState(() { _result = r; _loading = false; });
+    } catch (e) {
+      setState(() {
+        _result = {'success': false, 'error': e.toString()};
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: YS.bg,
+      appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_rounded),
+          onPressed: () => context.go('/'),
+        ),
+        title: Text('Pipeline Visualizer', style: YS.label(17, w: FontWeight.w700)),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(height: 1, color: YS.stroke),
+        ),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          // Info banner
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: YS.amberSoft,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: YS.amber.withValues(alpha: 0.3)),
+            ),
+            child: Row(children: [
+              const Icon(Icons.info_outline_rounded, color: YS.amberDeep, size: 18),
+              const SizedBox(width: 10),
+              Expanded(child: Text(
+                'Capture a fingerprint to see every processing step — '
+                'from raw image to minutiae extraction — in real time.',
+                style: YS.label(12, color: YS.amberDeep),
+              )),
+            ]),
+          ),
+          const SizedBox(height: 20),
+
+          // Camera
+          FingerprintCameraWidget(onImageCaptured: _run, disabled: _loading),
+          const SizedBox(height: 24),
+
+          // Loading
+          if (_loading) _loadingWidget(),
+
+          // Error
+          if (_result != null && _result!['success'] != true)
+            _errorCard(_result!['error'] ?? 'Unknown error'),
+
+          // Results
+          if (_result != null && _result!['success'] == true) ...[
+            _qualityRow(_result!),
+            const SizedBox(height: 20),
+            _livenessRow(_result!),
+            const SizedBox(height: 24),
+            Text('PIPELINE STEPS',
+                style: YS.label(11, color: YS.inkLight, w: FontWeight.w700)
+                    .copyWith(letterSpacing: 1.8)),
+            const SizedBox(height: 12),
+            _pipelineSteps(_result!),
+            const SizedBox(height: 20),
+            _minutiaeStats(_result!),
+          ],
+          const SizedBox(height: 40),
+        ],
+      ),
+    );
+  }
+
+  Widget _loadingWidget() => Container(
+    margin: const EdgeInsets.only(bottom: 24),
+    padding: const EdgeInsets.all(20),
+    decoration: BoxDecoration(color: YS.card, borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: YS.stroke), boxShadow: YS.cardShadow),
+    child: Column(children: [
+      // Step-by-step progress
+      ..._steps.asMap().entries.map((e) => _loadingStep(e.key, e.value)),
+    ]),
+  );
+
+  Widget _loadingStep(int idx, _Step step) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 8),
+    child: Row(children: [
+      SizedBox(
+        width: 20, height: 20,
+        child: CircularProgressIndicator(
+          strokeWidth: 2, color: YS.amber,
+          backgroundColor: YS.stroke,
+        ),
+      ),
+      const SizedBox(width: 12),
+      Text(step.label, style: YS.label(13, color: YS.inkMid, w: FontWeight.w500)),
+      const Spacer(),
+      Text('Processing...', style: YS.label(11, color: YS.inkLight)),
+    ]),
+  );
+
+  Widget _qualityRow(Map<String, dynamic> r) {
+    final qc = r['quality'] as Map<String, dynamic>? ?? {};
+    final passed = qc['passed'] == true;
+    final blur = qc['blur']?['blur_score'] ?? '—';
+    final brightness = qc['brightness']?['brightness'] ?? '—';
+    final glare = qc['glare']?['has_glare'] == true;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: passed ? YS.greenBg : YS.redBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: passed ? YS.green.withValues(alpha: 0.3) : YS.red.withValues(alpha: 0.3)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(passed ? Icons.check_circle_rounded : Icons.cancel_rounded,
+              color: passed ? YS.green : YS.red, size: 18),
+          const SizedBox(width: 8),
+          Text('Quality Gate — ${passed ? "PASSED" : "FAILED"}',
+              style: YS.label(13, color: passed ? YS.green : YS.red, w: FontWeight.w700)),
+        ]),
+        if (!passed && qc['guidance'] != null) ...[
+          const SizedBox(height: 6),
+          Text('→ ${qc['guidance']}', style: YS.label(12, color: YS.red)),
+        ],
+        const SizedBox(height: 12),
+        Row(children: [
+          _qcChip('Blur', '$blur', qc['blur']?['is_blurry'] == true ? YS.red : YS.green),
+          const SizedBox(width: 8),
+          _qcChip('Brightness', '$brightness', YS.inkMid),
+          const SizedBox(width: 8),
+          _qcChip('Glare', glare ? 'Yes' : 'None', glare ? YS.red : YS.green),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _qcChip(String k, String v, Color c) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+    decoration: BoxDecoration(
+      color: YS.card, borderRadius: BorderRadius.circular(8),
+      border: Border.all(color: YS.stroke),
+    ),
+    child: Column(children: [
+      Text(k, style: YS.label(9, color: YS.inkLight, w: FontWeight.w600)
+          .copyWith(letterSpacing: 0.5)),
+      const SizedBox(height: 2),
+      Text(v, style: YS.label(12, color: c, w: FontWeight.w700)),
+    ]),
+  );
+
+  Widget _livenessRow(Map<String, dynamic> r) {
+    final lv = r['liveness'] as Map<String, dynamic>? ?? {};
+    final live = lv['is_live'] == true;
+    final conf = ((lv['confidence'] ?? 0.0) as num).toDouble();
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: live ? YS.greenBg : YS.redBg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: live ? YS.green.withValues(alpha: 0.3) : YS.red.withValues(alpha: 0.3)),
+      ),
+      child: Row(children: [
+        Icon(live ? Icons.verified_rounded : Icons.dangerous_rounded,
+            color: live ? YS.green : YS.red, size: 22),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(live ? 'Live Finger Detected' : 'Spoof Detected',
+              style: YS.label(14, color: live ? YS.green : YS.red, w: FontWeight.w700)),
+          Text('Liveness confidence: ${(conf * 100).toStringAsFixed(1)}%',
+              style: YS.label(12, color: YS.inkMid)),
+        ])),
+        // Confidence arc
+        SizedBox(width: 48, height: 48,
+          child: Stack(alignment: Alignment.center, children: [
+            CircularProgressIndicator(
+              value: conf, strokeWidth: 4,
+              backgroundColor: YS.stroke,
+              color: live ? YS.green : YS.red,
+            ),
+            Text('${(conf * 100).toInt()}',
+                style: YS.label(10, color: live ? YS.green : YS.red, w: FontWeight.w700)),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _pipelineSteps(Map<String, dynamic> r) {
+    final images = r['images'] as Map<String, dynamic>? ?? {};
+    final imgKeys = ['original', 'cropped', 'preprocessed', 'visualization'];
+
+    return Column(
+      children: List.generate(_steps.length, (i) {
+        final step = _steps[i];
+        final key  = imgKeys[i];
+        final b64  = images[key] as String?;
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          decoration: BoxDecoration(
+            color: YS.card, borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: YS.stroke),
+            boxShadow: YS.cardShadow,
+          ),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+              child: Row(children: [
+                Container(
+                  width: 28, height: 28,
+                  decoration: BoxDecoration(
+                    color: YS.amberSoft, borderRadius: BorderRadius.circular(8)),
+                  child: Center(child: Text(step.number,
+                      style: YS.label(12, color: YS.amberDeep, w: FontWeight.w800))),
+                ),
+                const SizedBox(width: 10),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(step.label, style: YS.label(14, w: FontWeight.w700)),
+                  Text(step.desc, style: YS.label(11, color: YS.inkLight)),
+                ])),
+                Icon(step.icon, color: YS.amber, size: 18),
+              ]),
+            ),
+            const SizedBox(height: 12),
+            // Image
+            if (b64 != null)
+              ClipRRect(
+                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(18)),
+                child: Image.memory(
+                  base64Decode(b64),
+                  width: double.infinity,
+                  fit: BoxFit.contain,
+                ),
+              )
+            else
+              Container(
+                height: 120,
+                decoration: const BoxDecoration(
+                  borderRadius: BorderRadius.vertical(bottom: Radius.circular(18)),
+                  color: YS.cardAlt,
+                ),
+                child: Center(child: Text('Not available',
+                    style: YS.label(12, color: YS.inkLight))),
+              ),
+          ]),
+        );
+      }),
+    );
+  }
+
+  Widget _minutiaeStats(Map<String, dynamic> r) {
+    final count = r['minutiae_count'] ?? 0;
+    final mins  = r['minutiae'] as List? ?? [];
+    final rig   = mins.where((m) => m['type'] == 'RIG').length;
+    final bif   = mins.where((m) => m['type'] == 'BIF').length;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: YS.card, borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: YS.stroke),
+        boxShadow: YS.cardShadow,
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text('Minutiae Extraction', style: YS.label(15, w: FontWeight.w700)),
+        const SizedBox(height: 4),
+        Text('Ridge endings and bifurcations detected',
+            style: YS.label(12, color: YS.inkLight)),
+        const SizedBox(height: 16),
+        Row(children: [
+          _mStat('$count', 'Total', YS.amber),
+          const SizedBox(width: 12),
+          _mStat('$rig', 'Endings', YS.green),
+          const SizedBox(width: 12),
+          _mStat('$bif', 'Bifurcations', YS.blue),
+        ]),
+        if (count > 0) ...[
+          const SizedBox(height: 16),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: LinearProgressIndicator(
+              value: (count / 80).clamp(0.0, 1.0),
+              minHeight: 8,
+              backgroundColor: YS.stroke,
+              color: count >= 20 ? YS.green : YS.orange,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(count >= 20
+              ? '✓ Sufficient minutiae for reliable matching'
+              : '⚠ Low minutiae count — retake for better results',
+              style: YS.label(11, color: count >= 20 ? YS.green : YS.orange)),
+        ],
+      ]),
+    );
+  }
+
+  Widget _mStat(String val, String label, Color c) => Expanded(
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      decoration: BoxDecoration(
+        color: YS.cardAlt, borderRadius: BorderRadius.circular(12)),
+      child: Column(children: [
+        Text(val, style: YS.display(22, color: c)),
+        const SizedBox(height: 2),
+        Text(label, style: YS.label(11, color: YS.inkLight)),
+      ]),
+    ),
+  );
+
+  Widget _errorCard(String msg) => Container(
+    margin: const EdgeInsets.only(bottom: 16),
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: YS.redBg, borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: YS.red.withValues(alpha: 0.3)),
+    ),
+    child: Row(children: [
+      const Icon(Icons.error_outline_rounded, color: YS.red, size: 18),
+      const SizedBox(width: 10),
+      Expanded(child: Text(msg, style: YS.label(12, color: YS.red))),
+    ]),
+  );
+}
+
+class _Step {
+  final String number, label, desc;
+  final IconData icon;
+  const _Step(this.number, this.label, this.desc, this.icon);
+}

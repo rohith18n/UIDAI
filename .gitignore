@@ -1,0 +1,37 @@
+# ── Models (too large for git — share via Google Drive) ──────────────────────
+backend/*.pt
+backend/*.pth
+backend/*.h5
+backend/*.tflite
+backend/**/*.pt
+backend/**/*.pth
+backend/**/*.h5
+backend/**/*.tflite
+backend/models/
+
+# ── Python ────────────────────────────────────────────────────────────────────
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+backend/uploads/
+backend/outputs/
+backend/*.db
+backend/qctool/uploads/
+
+# ── Flutter ───────────────────────────────────────────────────────────────────
+.dart_tool/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+android/.gradle/
+android/local.properties
+ios/Pods/
+ios/.symlinks/
+pubspec.lock
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.DS_Store
+Thumbs.db
