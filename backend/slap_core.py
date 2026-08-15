@@ -495,8 +495,9 @@ def detect_minutiae(preprocessed, threshold=0.3, nms_size=5):
     else:
         gray = preprocessed
     orig_h, orig_w = gray.shape
-    enh = enhance_for_minutiae(gray)
-    rsz = cv2.resize(enh, (256, 256)).astype(np.float32) / 255.0
+    gray_256 = cv2.resize(gray, (256, 256))
+    enh = enhance_for_minutiae(gray_256)
+    rsz = enh.astype(np.float32) / 255.0
     t   = torch.FloatTensor(rsz).unsqueeze(0).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         loc, cos_m, sin_m, typ = model(t)
@@ -553,5 +554,11 @@ def create_visualization(preprocessed, minutiae):
 
 
 def img_to_b64(img):
-    _, buf = cv2.imencode(".png", img)
+    if img is None:
+        return ""
+    h, w = img.shape[:2]
+    if max(h, w) > 800:
+        scale = 800.0 / max(h, w)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)))
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return base64.b64encode(buf).decode()

@@ -114,10 +114,16 @@ def build_composite(image_bgr, placed):
     """Paste each preprocessed finger back at its detected bbox on a white canvas
     the size of the original capture — a 'contact-like' preprocessed slap."""
     h, w = image_bgr.shape[:2]
+    scale = 1.0
+    if max(h, w) > 1080:
+        scale = 1080.0 / max(h, w)
+        h, w = int(h * scale), int(w * scale)
     canvas = np.full((h, w), 255, np.uint8)
     for (x1, y1, x2, y2), pre in placed:
         if pre is None:
             continue
+        if scale != 1.0:
+            x1, y1, x2, y2 = int(x1 * scale), int(y1 * scale), int(x2 * scale), int(y2 * scale)
         tw = x2 - x1
         ph, pw = pre.shape[:2]
         if pw != tw and pw > 0:                       # keep finger width = bbox width

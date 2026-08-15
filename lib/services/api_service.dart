@@ -598,8 +598,12 @@ class ApiService {
     });
     try {
       final r = await _slap.post('/process_slap', data: fd);
-      final map = _asMap(r.data);
-      if (map.isNotEmpty) return map;
+      if (r.statusCode == 200) {
+        final map = _asMap(r.data);
+        if (map.isNotEmpty) return map;
+      } else if (r.data is Map && (r.data as Map).containsKey('error')) {
+        return _asMap(r.data);
+      }
     } catch (_) {}
 
     // Offline Slap Processing Fallback
@@ -644,8 +648,12 @@ class ApiService {
     });
     try {
       final r = await _slap.post('/enroll_slap', data: fd);
-      final map = _asMap(r.data);
-      if (map.isNotEmpty) return map;
+      if (r.statusCode == 200) {
+        final map = _asMap(r.data);
+        if (map.isNotEmpty) return map;
+      } else if (r.data is Map && (r.data as Map).containsKey('error')) {
+        return _asMap(r.data);
+      }
     } catch (_) {}
 
     final offlineRes = await processOffline(image);
@@ -687,8 +695,12 @@ class ApiService {
     });
     try {
       final r = await _slap.post('/authenticate_slap', data: fd);
-      final map = _asMap(r.data);
-      if (map.isNotEmpty) return map;
+      if (r.statusCode == 200) {
+        final map = _asMap(r.data);
+        if (map.isNotEmpty) return map;
+      } else if (r.data is Map && (r.data as Map).containsKey('error')) {
+        return _asMap(r.data);
+      }
     } catch (_) {}
 
     final offlineRes = await processOffline(image);
@@ -733,8 +745,12 @@ class ApiService {
     });
     try {
       final r = await _slap.post('/verify_slap', data: fd);
-      final map = _asMap(r.data);
-      if (map.isNotEmpty) return map;
+      if (r.statusCode == 200) {
+        final map = _asMap(r.data);
+        if (map.isNotEmpty) return map;
+      } else if (r.data is Map && (r.data as Map).containsKey('error')) {
+        return _asMap(r.data);
+      }
     } catch (_) {}
 
     final offlineRes = await processOffline(image);
