@@ -197,7 +197,7 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
               return Padding(
                 padding: const EdgeInsets.only(left: 8, bottom: 2),
                 child: Text(
-                  '•  ${(m['finger_position'] ?? '').toString().replaceAll('_', ' ').toUpperCase()}'
+                  '•  ${(m['finger_position'] ?? m['matched_position'] ?? m['probe_position'] ?? '').toString().replaceAll('_', ' ').toUpperCase()}'
                   '  —  ${(((m['confidence'] ?? 0) as num) * 100).toStringAsFixed(1)}%',
                   style: YS.label(12, w: FontWeight.w600),
                 ),

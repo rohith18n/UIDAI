@@ -398,7 +398,9 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
         try {
           // 1. Try Backend Quality Check (YOLO detector + blur + brightness + glare)
-          final qRes = await ApiService.qualityCheck(stable);
+          final qRes = await (_isSlap
+              ? ApiService.slapQualityCheck(stable)
+              : ApiService.qualityCheck(stable));
           if (qRes.isNotEmpty) {
             final fingerDetected = qRes['finger_detected'] == true;
             final isQPassed = qRes['passed'] == true;
@@ -411,7 +413,9 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
             if (!fingerDetected) {
               passed = false;
-              guideMsg = 'No fingerprint detected — position finger inside oval';
+              guideMsg = _isSlap
+                  ? 'No hand detected — place 4 fingers flat inside guide'
+                  : 'No fingerprint detected — position finger inside oval';
               issuesList = ['No finger detected in view'];
             } else if (!isQPassed) {
               passed = false;
@@ -419,7 +423,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
               issuesList = issues;
             } else {
               passed = true;
-              guideMsg = '✓ Fingerprint is clear & ready';
+              guideMsg = _isSlap ? '✓ Slap hand is clear & ready' : '✓ Fingerprint is clear & ready';
               issuesList = [];
             }
           } else {
@@ -430,6 +434,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
               width: 1080,
               height: 1920,
               bytesPerRow: 1080,
+              isSlap: _isSlap,
             );
             passed = localQuality.isPassed;
             guideMsg = localQuality.guidanceText;
@@ -564,6 +569,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         width: 1080,
         height: 1920,
         bytesPerRow: 1080,
+        isSlap: _isSlap,
       );
 
       final passed = localQuality.isPassed;
@@ -1600,8 +1606,8 @@ class _SlapOverlayPainter extends CustomPainter {
 
     final lengths =
         handSide == 'left'
-            ? <double>[0.50, 0.58, 0.52, 0.40]
-            : <double>[0.40, 0.52, 0.58, 0.50];
+            ? <double>[0.40, 0.52, 0.58, 0.50]
+            : <double>[0.50, 0.58, 0.52, 0.40];
 
     final slots = <RRect>[];
     for (var i = 0; i < 4; i++) {
@@ -1646,7 +1652,7 @@ class _SlapOverlayPainter extends CustomPainter {
 
     final tp = TextPainter(
       text: TextSpan(
-        text: 'Align fingers in the slots',
+        text: 'Align ${handSide == 'left' ? 'Left' : 'Right'} hand in slots',
         style: TextStyle(
           color: color.withValues(alpha: 0.9),
           fontSize: 12,

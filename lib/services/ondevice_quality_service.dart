@@ -65,6 +65,7 @@ class OnDeviceQualityService {
     required int height,
     required int bytesPerRow,
     int sampleStep = 2, // Sample every 2nd pixel for sub-10ms performance
+    bool isSlap = false,
   }) {
     if (yPlaneBytes.isEmpty || width <= 0 || height <= 0) {
       return const QualityAssessmentResult(
@@ -155,15 +156,16 @@ class OnDeviceQualityService {
     final bool hasGlare = glareRatio > maxGlareRatio;
 
     // Distance & scale heuristic (finger framing ratio)
-    final bool tooFar = effWidth < 280 || effHeight < 280;
+    final bool tooFar = isSlap ? (effWidth < 220 || effHeight < 220) : (effWidth < 280 || effHeight < 280);
     final bool tooClose = effWidth > 1800 || effHeight > 1800;
 
-    // Real-Time Friction Ridge Pattern Detection in central ROI
+    // Real-Time Friction Ridge Pattern Detection
     final bool isFingerDetected = _detectFingerPattern(
       luminanceBytes,
       effWidth,
       effHeight,
       effBytesPerRow,
+      isSlap: isSlap,
     );
 
     // 2. Compute Fast Discrete Laplacian Variance for Blur/Sharpness
@@ -178,7 +180,7 @@ class OnDeviceQualityService {
     final bool isBlurry = laplacianVar < blurThreshold;
 
     // 3. ROI Center Alignment Check
-    final bool isRoiAligned = _checkRoiAlignment(effWidth, effHeight);
+    final bool isRoiAligned = isSlap ? isFingerDetected : _checkRoiAlignment(effWidth, effHeight);
 
     // 4. Calculate Composite Readiness Score (0-100)
     double score = 100.0;
@@ -216,23 +218,23 @@ class OnDeviceQualityService {
     }
 
     // 5. Actionable Guidance Determination
-    String guidance = 'Hold steady — capturing...';
+    String guidance = isSlap ? 'Hold steady — capturing slap...' : 'Hold steady — capturing...';
     if (!isFingerDetected) {
-      guidance = 'Place finger inside the oval';
+      guidance = isSlap ? 'Place 4 fingers flat inside guide' : 'Place finger inside the oval';
     } else if (tooFar) {
-      guidance = 'Move finger closer to frame';
+      guidance = isSlap ? 'Move hand closer to frame' : 'Move finger closer to frame';
     } else if (tooClose) {
-      guidance = 'Move finger slightly back';
+      guidance = isSlap ? 'Move hand slightly back' : 'Move finger slightly back';
     } else if (tooDark) {
       guidance = 'Image is darker — open flash 💡';
     } else if (tooBright) {
       guidance = 'Too bright — avoid direct light source';
     } else if (hasGlare) {
-      guidance = 'Glare detected — tilt finger away from light';
+      guidance = 'Glare detected — tilt hand away from light';
     } else if (isBlurry) {
-      guidance = 'Finger is blurry — tap screen to focus 🔍';
+      guidance = 'Image is blurry — tap screen to focus 🔍';
     } else if (!isRoiAligned) {
-      guidance = 'Position finger inside the target oval';
+      guidance = isSlap ? 'Align fingers inside guide slots' : 'Position finger inside the target oval';
     }
 
     final bool isPassed =
@@ -244,7 +246,7 @@ class OnDeviceQualityService {
         !tooFar &&
         !tooClose &&
         isRoiAligned &&
-        score >= 70.0;
+        score >= 65.0;
 
     return QualityAssessmentResult(
       blurScore: double.parse(laplacianVar.toStringAsFixed(2)),
@@ -263,20 +265,22 @@ class OnDeviceQualityService {
     );
   }
 
-  /// Friction Ridge Gradient Frequency & Variance Filter in Central ROI
+  /// Friction Ridge Gradient Frequency & Variance Filter
   static bool _detectFingerPattern(
     Uint8List bytes,
     int width,
     int height,
-    int bytesPerRow,
-  ) {
+    int bytesPerRow, {
+    bool isSlap = false,
+  }) {
     if (width < 60 || height < 60 || bytes.isEmpty) return false;
 
-    // Focus analysis on the central ROI corresponding to target oval
-    final int startX = (width * 0.25).round();
-    final int endX = (width * 0.75).round();
-    final int startY = (height * 0.25).round();
-    final int endY = (height * 0.75).round();
+    // Focus analysis on the ROI (central oval for single, wide area for slap)
+    final int startX = isSlap ? (width * 0.10).round() : (width * 0.25).round();
+    final int endX = isSlap ? (width * 0.90).round() : (width * 0.75).round();
+    final int startY = isSlap ? (height * 0.15).round() : (height * 0.25).round();
+    final int endY = isSlap ? (height * 0.85).round() : (height * 0.75).round();
+
 
     int ridgeEdgePixels = 0;
     int totalRoiPixels = 0;
@@ -330,8 +334,8 @@ class OnDeviceQualityService {
     if (roiMean < 35.0 || roiMean > 225.0) return false;
 
     final double edgeRatio = ridgeEdgePixels / totalRoiPixels;
-    // Clear fingerprints exhibit dense alternating ridge-valley edge structures (> 20% ratio)
-    return edgeRatio >= 0.20;
+    final double minRatio = isSlap ? 0.08 : 0.20;
+    return edgeRatio >= minRatio;
   }
 
   /// Fast Laplacian Kernel Convolution on Luminance Buffer with Out-of-Bounds Protection

@@ -197,53 +197,48 @@ You should see `ALL OK`. If any module fails, run `pip install <that-module>` ag
 
 ---
 
-### Step 4 — Start the backend server
+### Step 4 — Start the backend servers
 
-**Mac/Linux:**
+The app uses two services:
+1. **Single-finger backend** on port **5002** (`app.py`)
+2. **Slap (multi-finger) backend** on port **5010** (`slap_app.py`)
+
+**Option A — Start both at once (Recommended):**
 ```bash
 cd UIDAI/backend
-source venv/bin/activate
-bash start.sh
+bash start_all.sh
 ```
 
-**Windows:**
-```powershell
-cd UIDAI\backend
-venv\Scripts\activate
-python app.py
-```
-
-You should see this output — wait for all models to load:
-```
-✓ U2Net loaded
-✓ Zero-DCE loaded
-✓ MinutiaeNet loaded
-✓ Liveness loaded (threshold=0.3)
-✓ Bright-spot detector loaded
-* Running on http://0.0.0.0:5001
-```
+**Option B — Start individually in separate terminals:**
+- **Terminal 1 (Single-finger on port 5002):**
+  ```bash
+  cd UIDAI/backend
+  source venv/bin/activate    # on Windows: venv\Scripts\activate
+  PORT=5002 python app.py
+  ```
+- **Terminal 2 (Slap multi-finger on port 5010):**
+  ```bash
+  cd UIDAI/backend
+  source venv/bin/activate    # on Windows: venv\Scripts\activate
+  PORT=5010 python slap_app.py
+  ```
 
 ---
 
-### Step 5 — Test the server is working
+### Step 5 — Test both servers are working
 
-Open a **new terminal** (keep the server running in the first one) and run:
+Open a **new terminal** and verify health checks for both backends:
 
 ```bash
-curl http://localhost:5001/health
+# 1. Single-finger backend
+curl http://127.0.0.1:5002/health
+
+# 2. Slap (multi-finger) backend
+curl http://127.0.0.1:5010/health
 ```
 
-You should see:
-```json
-{
-  "status": "ok",
-  "liveness_available": true,
-  "minutiae_available": true,
-  "brightspot_available": true
-}
-```
+Both should return `{"status": "ok", ...}`. ✅
 
-If you see this — your backend is fully working. ✅
 
 ---
 

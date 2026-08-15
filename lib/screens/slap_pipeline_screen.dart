@@ -191,8 +191,9 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
     final liveMap = liveRaw is Map ? liveRaw : null;
     final isLive  = liveMap?['is_live'] == true;
     final liveConf = (((liveMap?['confidence'] ?? 0) as num) * 100).toStringAsFixed(0);
-    final isoRaw = f['iso_code'];
-    final isoLen = isoRaw is List ? isoRaw.length : (isoRaw is String ? isoRaw.length : 0);
+    final templateB64 = f['template_b64'];
+    final templateLen = templateB64 is String ? (base64Decode(templateB64).length) : 0;
+    final isoCode = f['iso_code'];
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
@@ -226,7 +227,7 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
             Expanded(child: _stageTile('3. Minutiae',  vis, 'minutiae')),
           ]),
           const SizedBox(height: 10),
-          Text('ISO 19794-2 template: $isoLen bytes',
+          Text('ISO 19794-2 template: $templateLen bytes (ISO Code: $isoCode)',
               style: YS.label(11, color: YS.inkLight)),
         ]),
       ),

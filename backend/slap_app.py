@@ -45,9 +45,10 @@ ISO_FINGER_CODES = {
 # orientation dependent — override per request with form field `finger_order`
 # (comma-separated) if your capture geometry differs.
 SLAP_ORDER = {
-    "right": ["right_little", "right_ring", "right_middle", "right_index"],
-    "left":  ["left_index", "left_middle", "left_ring", "left_little"],
+    "right": ["right_index", "right_middle", "right_ring", "right_little"],
+    "left":  ["left_little", "left_ring", "left_middle", "left_index"],
 }
+
 
 
 def init_slap_db():
@@ -124,7 +125,7 @@ def build_composite(image_bgr, placed):
     return canvas
 
 
-def process_slap(image_bgr, hand_side="right", conf=0.25, finger_order=None, want_vis=False):
+def process_slap(image_bgr, hand_side="right", conf=0.15, finger_order=None, want_vis=False):
     dets = core.detect_all_finger_boxes(image_bgr, conf=conf)
     if not dets:
         return {"finger_count": 0, "fingers": [], "error": "No fingers detected"}
@@ -152,7 +153,14 @@ def process_slap(image_bgr, hand_side="right", conf=0.25, finger_order=None, wan
             finger["error"] = str(e)
         fingers.append(finger)
 
-    out = {"finger_count": len(fingers), "hand_side": hand_side, "fingers": fingers}
+    total_min = sum(f.get("minutiae_count", 0) for f in fingers if f.get("ok"))
+    out = {
+        "success": True,
+        "finger_count": len(fingers),
+        "total_minutiae": total_min,
+        "hand_side": hand_side,
+        "fingers": fingers,
+    }
     if want_vis and placed:
         out["composite_b64"] = core.img_to_b64(build_composite(image_bgr, placed))
     return out
@@ -191,15 +199,15 @@ def quality_check_endpoint():
         return jsonify({"passed": False, "finger_detected": False,
                         "guidance": "No image"}), 400
 
-    dets = core.detect_all_finger_boxes(img, conf=0.25)
+    dets = core.detect_all_finger_boxes(img, conf=0.15)
     n = len(dets)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur_score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    is_blurry = blur_score < 60.0
+    is_blurry = blur_score < 20.0
     brightness = float(gray.mean())
-    too_dark = brightness < 55.0
-    too_bright = brightness > 205.0
+    too_dark = brightness < 35.0
+    too_bright = brightness > 225.0
 
     if n == 0:
         guidance = "Place your hand in the frame"
@@ -290,8 +298,14 @@ def enroll_slap_endpoint():
     con.close()
 
     return jsonify({
-        "uid": uid, "name": name, "batch": batch, "hand_side": hand_side,
-        "enrolled_fingers": saved, "finger_count": len(saved),
+        "success": True,
+        "uid": uid,
+        "name": name,
+        "batch": batch,
+        "hand_side": hand_side,
+        "total_minutiae": total_minutiae,
+        "enrolled_fingers": saved,
+        "finger_count": len(saved),
     })
 
 
@@ -511,15 +525,16 @@ def authenticate_slap_endpoint():
                             "finger_count": 0}), 422
 
         fingers = [f for f in result["fingers"] if f.get("ok")]
-        for f in fingers:
-            lv = f.get("liveness") or {}
-            if not lv.get("is_live"):
-                return jsonify({
-                    "success": False,
-                    "spoof_detected": True,
-                    "finger_position": f.get("finger_position"),
-                    "liveness_confidence": lv.get("confidence", 0.0),
-                }), 422
+        if not fingers:
+            return jsonify({"success": False, "error": "No valid fingers processed"}), 422
+
+        live_fingers = [f for f in fingers if (f.get("liveness") or {}).get("is_live", True)]
+        if fingers and not live_fingers:
+            return jsonify({
+                "success": False,
+                "spoof_detected": True,
+                "error": "Spoof detected — please use live, genuine fingers",
+            }), 422
 
         con = sqlite3.connect(SLAP_DB)
         con.row_factory = sqlite3.Row
@@ -555,6 +570,7 @@ def authenticate_slap_endpoint():
                         finger_scores.append({
                             "probe_position": f["finger_position"],
                             "matched_position": mpos,
+                            "finger_position": mpos or f["finger_position"],
                             "confidence": round(s, 5),
                         })
                         matched_positions.append(s)
@@ -637,15 +653,16 @@ def verify_slap_endpoint():
                             "guidance": "No fingers detected"}), 422
 
         fingers = [f for f in result["fingers"] if f.get("ok")]
-        for f in fingers:
-            lv = f.get("liveness") or {}
-            if not lv.get("is_live"):
-                return jsonify({
-                    "success": False,
-                    "spoof_detected": True,
-                    "finger_position": f.get("finger_position"),
-                    "liveness_confidence": lv.get("confidence", 0.0),
-                }), 422
+        if not fingers:
+            return jsonify({"success": False, "error": "No valid fingers processed"}), 422
+
+        live_fingers = [f for f in fingers if (f.get("liveness") or {}).get("is_live", True)]
+        if fingers and not live_fingers:
+            return jsonify({
+                "success": False,
+                "spoof_detected": True,
+                "error": "Spoof detected — please use live, genuine fingers",
+            }), 422
 
         con = sqlite3.connect(SLAP_DB)
         con.row_factory = sqlite3.Row
@@ -672,6 +689,7 @@ def verify_slap_endpoint():
                     matched_fingers.append({
                         "probe_position": f["finger_position"],
                         "matched_position": mpos,
+                        "finger_position": mpos or f["finger_position"],
                         "confidence": round(s, 5),
                     })
 

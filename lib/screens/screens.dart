@@ -273,7 +273,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
             const SizedBox(height: 4),
             ...matchedFingers.map<Widget>((f) => Padding(
                   padding: const EdgeInsets.only(left: 8, bottom: 2),
-                  child: Text('•  ${(f['finger_position'] ?? '').toString().replaceAll('_', ' ').toUpperCase()}'
+                  child: Text('•  ${(f['finger_position'] ?? f['matched_position'] ?? f['probe_position'] ?? '').toString().replaceAll('_', ' ').toUpperCase()}'
                       '  —  ${(((f['confidence'] ?? 0) as num) * 100).toStringAsFixed(1)}%',
                       style: YS.label(12, w: FontWeight.w600)),
                 )),

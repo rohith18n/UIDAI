@@ -293,7 +293,7 @@ def get_finger_detector():
 # ══════════════════════════════════════════════════════════════════════════════
 # STAGE 1 — MULTI-FINGER DETECTION  (the only real change vs single-finger app)
 # ══════════════════════════════════════════════════════════════════════════════
-def detect_all_finger_boxes(image_bgr, conf=0.25, min_area_frac=0.004):
+def detect_all_finger_boxes(image_bgr, conf=0.15, min_area_frac=0.002):
     """
     Return EVERY detected finger (YOLO applies NMS internally), instead of the
     single highest-confidence box the single-finger app selected via np.argmax.
