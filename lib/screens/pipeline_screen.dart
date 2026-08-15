@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/app_theme.dart';
 import '../widgets/fingerprint_camera_widget.dart';
+import '../models/capture_mode.dart';
 import '../services/api_service.dart';
 
 class PipelineScreen extends StatefulWidget {
@@ -84,7 +85,12 @@ class _PipelineScreenState extends State<PipelineScreen> {
           const SizedBox(height: 20),
 
           // Camera
-          FingerprintCameraWidget(onImageCaptured: _run, disabled: _loading),
+          FingerprintCameraWidget(
+            onImageCaptured: _run,
+            disabled: _loading,
+            mode: CaptureMode.single,
+            overlayStyle: 'oval',
+          ),
           const SizedBox(height: 24),
 
           // Loading
@@ -210,44 +216,96 @@ class _PipelineScreenState extends State<PipelineScreen> {
   }
 
   Widget _qualityRow(Map<String, dynamic> r) {
-    final qc = r['quality'] as Map<String, dynamic>? ?? {};
-    final passed = qc['passed'] == true;
-    final blur = qc['blur']?['blur_score'] ?? '—';
-    final brightness = qc['brightness']?['brightness'] ?? '—';
-    final glare = qc['glare']?['has_glare'] == true;
+    final qcRaw = r['quality'];
+    final Map<dynamic, dynamic> qc = qcRaw is Map ? qcRaw : {};
+    final passed = qc['passed'] == true || qc['is_passed'] == true;
+
+    dynamic blurVal = qc['blur'];
+    if (blurVal is Map) {
+      blurVal = blurVal['blur_score'];
+    }
+    blurVal ??= qc['blur_score'] ?? '—';
+
+    dynamic brightVal = qc['brightness'];
+    if (brightVal is Map) {
+      brightVal = brightVal['brightness'];
+    }
+    brightVal ??= qc['brightness_val'] ?? '—';
+
+    dynamic glareVal = qc['glare'];
+    bool hasGlare = false;
+    if (glareVal is Map) {
+      hasGlare = glareVal['has_glare'] == true;
+    } else if (qc['has_glare'] != null) {
+      hasGlare = qc['has_glare'] == true;
+    }
+
+    final isBlurry = (qc['blur'] is Map && qc['blur']['is_blurry'] == true) ||
+        qc['is_blurry'] == true;
+    final guidance = qc['guidance'] ?? qc['guidance_text'];
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: passed ? YS.greenBg : YS.redBg,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: passed ? YS.green.withValues(alpha: 0.3) : YS.red.withValues(alpha: 0.3)),
+        border: Border.all(
+          color: passed
+              ? YS.green.withValues(alpha: 0.3)
+              : YS.red.withValues(alpha: 0.3),
+        ),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Icon(passed ? Icons.check_circle_rounded : Icons.cancel_rounded,
-              color: passed ? YS.green : YS.red, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Quality Gate — ${passed ? "PASSED" : "FAILED"}',
-              style: YS.label(13, color: passed ? YS.green : YS.red, w: FontWeight.w700),
-            ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                passed ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                color: passed ? YS.green : YS.red,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Quality Gate — ${passed ? "PASSED" : "FAILED"}',
+                  style: YS.label(
+                    13,
+                    color: passed ? YS.green : YS.red,
+                    w: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
           ),
-        ]),
-        if (!passed && qc['guidance'] != null) ...[
-          const SizedBox(height: 6),
-          Text('→ ${qc['guidance']}', style: YS.label(12, color: YS.red)),
+          if (!passed && guidance != null) ...[
+            const SizedBox(height: 6),
+            Text('→ $guidance', style: YS.label(12, color: YS.red)),
+          ],
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _qcChip(
+                  'Blur',
+                  '$blurVal',
+                  isBlurry ? YS.red : YS.green,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: _qcChip('Brightness', '$brightVal', YS.inkMid)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _qcChip(
+                  'Glare',
+                  hasGlare ? 'Yes' : 'None',
+                  hasGlare ? YS.red : YS.green,
+                ),
+              ),
+            ],
+          ),
         ],
-        const SizedBox(height: 12),
-        Row(children: [
-          Expanded(child: _qcChip('Blur', '$blur', qc['blur']?['is_blurry'] == true ? YS.red : YS.green)),
-          const SizedBox(width: 8),
-          Expanded(child: _qcChip('Brightness', '$brightness', YS.inkMid)),
-          const SizedBox(width: 8),
-          Expanded(child: _qcChip('Glare', glare ? 'Yes' : 'None', glare ? YS.red : YS.green)),
-        ]),
-      ]),
+      ),
     );
   }
 
@@ -266,7 +324,8 @@ class _PipelineScreenState extends State<PipelineScreen> {
   );
 
   Widget _livenessRow(Map<String, dynamic> r) {
-    final lv = r['liveness'] as Map<String, dynamic>? ?? {};
+    final livenessRaw = r['liveness'];
+    final Map<dynamic, dynamic> lv = livenessRaw is Map ? livenessRaw : {};
     final live = lv['is_live'] == true;
     final conf = ((lv['confidence'] ?? 0.0) as num).toDouble();
     return Container(
@@ -303,7 +362,8 @@ class _PipelineScreenState extends State<PipelineScreen> {
   }
 
   Widget _pipelineSteps(Map<String, dynamic> r) {
-    final images = r['images'] as Map<String, dynamic>? ?? {};
+    final imagesRaw = r['images'];
+    final Map<dynamic, dynamic> images = imagesRaw is Map ? imagesRaw : {};
     final imgKeys = ['original', 'cropped', 'preprocessed', 'visualization'];
 
     return Column(

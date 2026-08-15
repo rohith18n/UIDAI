@@ -39,19 +39,41 @@ class FingerprintSdkPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                     if (pipelineResult != null) {
                         val resultMap = mapOf(
                             "success" to pipelineResult.success,
+                            "mode" to "offline_on_device",
                             "message" to pipelineResult.message,
                             "total_execution_time_ms" to pipelineResult.totalExecutionTimeMs,
+                            "execution_time_ms" to pipelineResult.totalExecutionTimeMs,
                             "is_finger_detected" to pipelineResult.isFingerDetected,
                             "blur_score" to pipelineResult.blurScore,
                             "brightness" to pipelineResult.brightness,
                             "glare_detected" to pipelineResult.glareDetected,
                             "is_live" to pipelineResult.isLive,
+                            "liveness" to mapOf(
+                                "is_live" to pipelineResult.isLive,
+                                "confidence" to pipelineResult.livenessScore
+                            ),
                             "liveness_score" to pipelineResult.livenessScore,
                             "minutiae_count" to pipelineResult.minutiaeCount,
                             "iso_template" to pipelineResult.isoTemplateBase64,
                             "cropped_image" to pipelineResult.croppedBase64,
                             "preprocessed_image" to pipelineResult.preprocessedBase64,
+                            "visualization_image" to pipelineResult.visualizationBase64,
+                            "images" to mapOf(
+                                "original" to pipelineResult.originalBase64,
+                                "cropped" to pipelineResult.croppedBase64,
+                                "preprocessed" to pipelineResult.preprocessedBase64,
+                                "visualization" to pipelineResult.visualizationBase64
+                            ),
                             "guidance" to pipelineResult.guidance,
+                            "minutiae" to pipelineResult.minutiaeList.map {
+                                mapOf(
+                                    "x" to it.x,
+                                    "y" to it.y,
+                                    "direction" to it.direction,
+                                    "type" to it.type,
+                                    "confidence" to it.quality
+                                )
+                            },
                             "minutiae_list" to pipelineResult.minutiaeList.map {
                                 mapOf(
                                     "x" to it.x,
@@ -65,6 +87,63 @@ class FingerprintSdkPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                         result.success(resultMap)
                     } else {
                         result.error("SDK_ERROR", "Pipeline execution failed", null)
+                    }
+                }
+            }
+
+            "processSlapOffline" -> {
+                val imageBytes = call.argument<ByteArray>("imageBytes")
+                val handSide = call.argument<String>("handSide") ?: "right"
+                if (imageBytes == null) {
+                    result.error("INVALID_ARGUMENT", "imageBytes cannot be null", null)
+                    return
+                }
+
+                scope.launch {
+                    val slapResult = sdk?.processSlapOffline(imageBytes, handSide)
+                    if (slapResult != null) {
+                        val resultMap = mapOf(
+                            "success" to slapResult.success,
+                            "mode" to "offline_native_kotlin",
+                            "message" to slapResult.message,
+                            "hand_side" to slapResult.handSide,
+                            "finger_count" to slapResult.fingerCount,
+                            "total_minutiae" to slapResult.totalMinutiae,
+                            "composite_b64" to slapResult.compositeBase64,
+                            "total_execution_time_ms" to slapResult.totalExecutionTimeMs,
+                            "execution_time_ms" to slapResult.totalExecutionTimeMs,
+                            "fingers" to slapResult.fingers.map { f ->
+                                mapOf(
+                                    "finger_position" to f.fingerPosition,
+                                    "position" to f.position,
+                                    "iso_code" to f.isoCode,
+                                    "detection_conf" to f.detectionConf,
+                                    "minutiae_count" to f.minutiaeCount,
+                                    "iso_template" to f.isoTemplateBase64,
+                                    "template_b64" to f.isoTemplateBase64,
+                                    "cropped_b64" to f.croppedBase64,
+                                    "preprocessed_b64" to f.preprocessedBase64,
+                                    "visualization_b64" to f.visualizationBase64,
+                                    "execution_time_ms" to f.executionTimeMs,
+                                    "liveness" to mapOf(
+                                        "is_live" to f.isLive,
+                                        "confidence" to f.livenessScore
+                                    ),
+                                    "minutiae" to f.minutiaeList.map { m ->
+                                        mapOf(
+                                            "x" to m.x,
+                                            "y" to m.y,
+                                            "direction" to m.direction,
+                                            "type" to m.type,
+                                            "confidence" to m.quality
+                                        )
+                                    }
+                                )
+                            }
+                        )
+                        result.success(resultMap)
+                    } else {
+                        result.error("SDK_ERROR", "Slap pipeline execution failed", null)
                     }
                 }
             }

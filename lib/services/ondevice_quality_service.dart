@@ -2,7 +2,7 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
-/// Quality Assessment Result containing scores and real-time guidance feedback
+/// Quality Assessment Result containing scores, finger detection metrics, and real-time guidance feedback
 class QualityAssessmentResult {
   final double blurScore;
   final bool isBlurry;
@@ -13,6 +13,11 @@ class QualityAssessmentResult {
   final bool hasGlare;
   final bool isRoiAligned;
   final bool isFingerDetected;
+  final int fingerCount;
+  final double detectionConf;
+  final double offsetX;
+  final double offsetY;
+  final String roiGuidance;
   final double readinessScore;
   final String readinessGrade;
   final String guidanceText;
@@ -28,6 +33,11 @@ class QualityAssessmentResult {
     required this.hasGlare,
     required this.isRoiAligned,
     required this.isFingerDetected,
+    this.fingerCount = 0,
+    this.detectionConf = 0.0,
+    this.offsetX = 0.0,
+    this.offsetY = 0.0,
+    this.roiGuidance = '',
     required this.readinessScore,
     required this.readinessGrade,
     required this.guidanceText,
@@ -35,36 +45,56 @@ class QualityAssessmentResult {
   });
 
   Map<String, dynamic> toJson() => {
+    'passed': isPassed,
+    'is_passed': isPassed,
+    'guidance': guidanceText,
+    'guidance_text': guidanceText,
     'blur_score': blurScore,
     'is_blurry': isBlurry,
-    'brightness': brightness,
+    'blur': {
+      'blur_score': blurScore,
+      'is_blurry': isBlurry,
+    },
+    'brightness': {
+      'brightness': brightness,
+      'too_dark': tooDark,
+      'too_bright': tooBright,
+    },
+    'brightness_val': brightness,
     'too_dark': tooDark,
     'too_bright': tooBright,
     'glare_ratio': glareRatio,
     'has_glare': hasGlare,
+    'glare': {
+      'has_glare': hasGlare,
+      'glare_fraction': glareRatio,
+    },
     'roi_aligned': isRoiAligned,
     'is_finger_detected': isFingerDetected,
+    'finger_count': fingerCount,
+    'detection_conf': detectionConf,
+    'offset_x': offsetX,
+    'offset_y': offsetY,
+    'roi_guidance': roiGuidance,
     'readiness_score': readinessScore,
     'readiness_grade': readinessGrade,
-    'guidance_text': guidanceText,
-    'is_passed': isPassed,
   };
 }
 
 /// Production-ready On-Device Quality Service executing sub-15ms calculations
 class OnDeviceQualityService {
-  static const double blurThreshold = 25.0;
-  static const double minBrightness = 40.0;
-  static const double maxBrightness = 220.0;
-  static const double maxGlareRatio = 0.15;
+  static const double blurThreshold = 20.0;
+  static const double minBrightness = 35.0;
+  static const double maxBrightness = 225.0;
+  static const double maxGlareRatio = 0.05;
 
-  /// Evaluates camera luminance, handling both raw Y-plane bytes and encoded image files (JPEG/PNG) safely.
+  /// Evaluates camera luminance buffer using the exact backend quality check and ROI detection algorithm.
   static QualityAssessmentResult evaluateYPlane({
     required Uint8List yPlaneBytes,
     required int width,
     required int height,
     required int bytesPerRow,
-    int sampleStep = 2, // Sample every 2nd pixel for sub-10ms performance
+    int sampleStep = 2,
     bool isSlap = false,
   }) {
     if (yPlaneBytes.isEmpty || width <= 0 || height <= 0) {
@@ -78,6 +108,11 @@ class OnDeviceQualityService {
         hasGlare: false,
         isRoiAligned: false,
         isFingerDetected: false,
+        fingerCount: 0,
+        detectionConf: 0.0,
+        offsetX: 0.0,
+        offsetY: 0.0,
+        roiGuidance: 'Place finger in view',
         readinessScore: 0.0,
         readinessGrade: 'F',
         guidanceText: 'No camera frame available',
@@ -85,7 +120,7 @@ class OnDeviceQualityService {
       );
     }
 
-    Uint8List luminanceBytes;
+    Uint8List gray;
     int effWidth = width;
     int effHeight = height;
     int effBytesPerRow = bytesPerRow;
@@ -106,89 +141,185 @@ class OnDeviceQualityService {
           effWidth = decoded.width;
           effHeight = decoded.height;
           effBytesPerRow = decoded.width;
-          luminanceBytes = Uint8List(effWidth * effHeight);
+          gray = Uint8List(effWidth * effHeight);
 
           int idx = 0;
           for (final pixel in decoded) {
-            if (idx < luminanceBytes.length) {
-              // Convert RGB pixel to normalized luminance (0-255)
-              luminanceBytes[idx++] = (pixel.luminanceNormalized * 255.0)
-                  .round()
-                  .clamp(0, 255);
+            if (idx < gray.length) {
+              gray[idx++] = (pixel.luminanceNormalized * 255.0).round().clamp(0, 255);
             }
           }
         } else {
-          luminanceBytes = yPlaneBytes;
+          gray = yPlaneBytes;
         }
       } catch (_) {
-        luminanceBytes = yPlaneBytes;
+        gray = yPlaneBytes;
       }
     } else {
-      luminanceBytes = yPlaneBytes;
+      gray = yPlaneBytes;
     }
 
-    double totalSum = 0.0;
-    int sampledPixelCount = 0;
-    int overexposedCount = 0;
+    if (gray.isEmpty || effWidth < 10 || effHeight < 10) {
+      return const QualityAssessmentResult(
+        blurScore: 0.0,
+        isBlurry: true,
+        brightness: 0.0,
+        tooDark: true,
+        tooBright: false,
+        glareRatio: 0.0,
+        hasGlare: false,
+        isRoiAligned: false,
+        isFingerDetected: false,
+        readinessScore: 0.0,
+        readinessGrade: 'F',
+        guidanceText: 'Invalid frame',
+        isPassed: false,
+      );
+    }
 
-    // 1. Calculate Mean Luminance & Glare Overexposure with safe indexing
+    // 1. Exact Backend Brightness & Glare Calculation
+    double totalBrightness = 0.0;
+    int overexposedCount = 0;
+    int totalPixels = 0;
+
     for (int y = 0; y < effHeight; y += sampleStep) {
       final int rowOffset = y * effBytesPerRow;
       for (int x = 0; x < effWidth; x += sampleStep) {
         final int idx = rowOffset + x;
-        if (idx >= luminanceBytes.length) break;
-        final int val = luminanceBytes[idx];
-        totalSum += val;
-        sampledPixelCount++;
+        if (idx >= gray.length) break;
+        final int val = gray[idx];
+        totalBrightness += val;
+        totalPixels++;
         if (val > 240) {
           overexposedCount++;
         }
       }
     }
 
-    final double meanBrightness =
-        sampledPixelCount > 0 ? (totalSum / sampledPixelCount) : 0.0;
-    final double glareRatio =
-        sampledPixelCount > 0 ? (overexposedCount / sampledPixelCount) : 0.0;
-
+    final double meanBrightness = totalPixels > 0 ? (totalBrightness / totalPixels) : 0.0;
+    final double glareFraction = totalPixels > 0 ? (overexposedCount / totalPixels) : 0.0;
     final bool tooDark = meanBrightness < minBrightness;
     final bool tooBright = meanBrightness > maxBrightness;
-    final bool hasGlare = glareRatio > maxGlareRatio;
+    final bool hasGlare = glareFraction > maxGlareRatio;
 
-    // Distance & scale heuristic (finger framing ratio)
-    final bool tooFar = isSlap ? (effWidth < 220 || effHeight < 220) : (effWidth < 280 || effHeight < 280);
-    final bool tooClose = effWidth > 1800 || effHeight > 1800;
-
-    // Real-Time Friction Ridge Pattern Detection
-    final bool isFingerDetected = _detectFingerPattern(
-      luminanceBytes,
-      effWidth,
-      effHeight,
-      effBytesPerRow,
-      isSlap: isSlap,
-    );
-
-    // 2. Compute Fast Discrete Laplacian Variance for Blur/Sharpness
-    final double laplacianVar = _computeLaplacianVariance(
-      luminanceBytes,
+    // 2. Exact Backend Blur Calculation via Laplacian Variance (cv2.Laplacian)
+    final double blurScore = _computeLaplacianVariance(
+      gray,
       effWidth,
       effHeight,
       effBytesPerRow,
       step: sampleStep,
     );
+    final bool isBlurry = blurScore < blurThreshold;
 
-    final bool isBlurry = laplacianVar < blurThreshold;
+    // 3. Exact Backend Finger ROI Detection & Corner Background Separation
+    final int tl = gray[0];
+    final int tr = gray[min(effWidth - 1, gray.length - 1)];
+    final int bl = gray[min((effHeight - 1) * effBytesPerRow, gray.length - 1)];
+    final int br = gray[min((effHeight - 1) * effBytesPerRow + (effWidth - 1), gray.length - 1)];
+    final double meanCorners = (tl + tr + bl + br) / 4.0;
 
-    // 3. ROI Center Alignment Check
-    final bool isRoiAligned = isSlap ? isFingerDetected : _checkRoiAlignment(effWidth, effHeight);
+    int foregroundPixels = 0;
+    double sumX = 0.0;
+    double sumY = 0.0;
+    int sampledCount = 0;
 
-    // 4. Calculate Composite Readiness Score (0-100)
+    final int numBins = 16;
+    final List<int> colGradients = List.filled(numBins, 0);
+    final double binWidth = effWidth / numBins;
+
+    final int startX = (effWidth * 0.05).round();
+    final int endX = (effWidth * 0.95).round();
+    final int startY = (effHeight * 0.05).round();
+    final int endY = (effHeight * 0.95).round();
+
+    for (int y = startY; y < endY; y += 2) {
+      final int rowCurr = y * effBytesPerRow;
+      for (int x = startX; x < endX; x += 2) {
+        final int idx = rowCurr + x;
+        if (idx >= gray.length) continue;
+        final int val = gray[idx];
+        sampledCount++;
+
+        // Corner-adaptive foreground test (faithful to backend check_roi)
+        final bool isFg = meanCorners > 127 ? (val < 235) : (val > 25);
+        if (isFg) {
+          foregroundPixels++;
+          sumX += x;
+          sumY += y;
+
+          if (isSlap && binWidth > 0) {
+            final int bin = (x / binWidth).floor().clamp(0, numBins - 1);
+            colGradients[bin]++;
+          }
+        }
+      }
+    }
+
+    final double minFgRatio = isSlap ? 0.05 : 0.04;
+    final bool isFingerDetected = sampledCount > 0 && ((foregroundPixels / sampledCount) >= minFgRatio);
+
+    double offsetX = 0.0;
+    double offsetY = 0.0;
+    bool isRoiAligned = false;
+    String roiGuidance = '';
+    int fingerCount = isFingerDetected ? 1 : 0;
+    double detectionConf = 0.0;
+
+    if (isFingerDetected && foregroundPixels > 0) {
+      final double centroidX = sumX / foregroundPixels;
+      final double centroidY = sumY / foregroundPixels;
+      final double imageCenterX = effWidth * 0.5;
+      final double imageCenterY = effHeight * 0.5;
+
+      offsetX = centroidX - imageCenterX;
+      offsetY = centroidY - imageCenterY;
+
+      final double toleranceX = isSlap ? (effWidth * 0.35) : (effWidth * 0.20);
+      final double toleranceY = effHeight * 0.20;
+      isRoiAligned = (offsetX.abs() <= toleranceX) && (offsetY.abs() <= toleranceY);
+
+      if (isRoiAligned) {
+        roiGuidance = '';
+      } else if (offsetX.abs() >= offsetY.abs()) {
+        roiGuidance = offsetX < 0 ? 'Move right ➡️' : 'Move left ⬅️';
+      } else {
+        roiGuidance = offsetY < 0 ? 'Move down ⬇️' : 'Move up ⬆️';
+      }
+
+      if (isSlap) {
+        // Calculate the horizontal width span of foreground tissue across 16 bins
+        int activeBins = 0;
+        final int binMinThreshold = max(5, (foregroundPixels / numBins * 0.25).round());
+        for (int i = 0; i < numBins; i++) {
+          if (colGradients[i] >= binMinThreshold) {
+            activeBins++;
+          }
+        }
+
+        final double fgRatio = foregroundPixels / max(1, sampledCount);
+
+        // Multi-finger width span mapping:
+        if (activeBins >= 5 || fgRatio >= 0.10) {
+          fingerCount = 4; // Full 4-finger slap
+        } else if (activeBins >= 4 || fgRatio >= 0.07) {
+          fingerCount = 3;
+        } else if (activeBins >= 2 || fgRatio >= 0.04) {
+          fingerCount = 2;
+        } else {
+          fingerCount = 1;
+        }
+      }
+      detectionConf = min(0.99, 0.65 + ((foregroundPixels / sampledCount) * 0.5));
+    }
+
+    // 4. Exact Readiness Score & Guidance Mapping
     double score = 100.0;
     if (!isFingerDetected) {
       score -= 55.0;
     }
     if (isBlurry) {
-      score -= min(45.0, (blurThreshold - laplacianVar) * 2.0 + 20.0);
+      score -= min(45.0, (blurThreshold - blurScore) * 2.0 + 20.0);
     }
     if (tooDark) {
       score -= min(35.0, (minBrightness - meanBrightness) * 0.8 + 15.0);
@@ -196,14 +327,11 @@ class OnDeviceQualityService {
       score -= min(35.0, (meanBrightness - maxBrightness) * 0.6 + 15.0);
     }
     if (hasGlare) {
-      score -= min(35.0, glareRatio * 150.0 + 15.0);
+      score -= min(35.0, glareFraction * 150.0 + 15.0);
     }
-    if (tooFar) {
-      score -= 20.0;
-    } else if (tooClose) {
-      score -= 20.0;
+    if (!isRoiAligned) {
+      score -= 15.0;
     }
-
     score = max(0.0, min(100.0, score));
 
     String grade = 'F';
@@ -217,24 +345,25 @@ class OnDeviceQualityService {
       grade = 'D';
     }
 
-    // 5. Actionable Guidance Determination
-    String guidance = isSlap ? 'Hold steady — capturing slap...' : 'Hold steady — capturing...';
+    String guidance;
     if (!isFingerDetected) {
-      guidance = isSlap ? 'Place 4 fingers flat inside guide' : 'Place finger inside the oval';
-    } else if (tooFar) {
-      guidance = isSlap ? 'Move hand closer to frame' : 'Move finger closer to frame';
-    } else if (tooClose) {
-      guidance = isSlap ? 'Move hand slightly back' : 'Move finger slightly back';
+      guidance = isSlap ? 'Place 4 fingers flat inside guide' : 'Place finger inside oval';
+    } else if (isSlap && fingerCount < 3) {
+      guidance = 'Place all 4 fingers flat inside guide';
+    } else if (!isRoiAligned && roiGuidance.isNotEmpty) {
+      guidance = roiGuidance;
     } else if (tooDark) {
-      guidance = 'Image is darker — open flash 💡';
+      guidance = 'Too dark — turn on flash 💡';
     } else if (tooBright) {
-      guidance = 'Too bright — avoid direct light source';
+      guidance = 'Too bright — reduce exposure';
     } else if (hasGlare) {
       guidance = 'Glare detected — tilt hand away from light';
     } else if (isBlurry) {
       guidance = 'Image is blurry — tap screen to focus 🔍';
-    } else if (!isRoiAligned) {
-      guidance = isSlap ? 'Align fingers inside guide slots' : 'Position finger inside the target oval';
+    } else {
+      guidance = isSlap
+          ? '$fingerCount fingers detected — hold still'
+          : 'Good — capture ready';
     }
 
     final bool isPassed =
@@ -243,21 +372,25 @@ class OnDeviceQualityService {
         !tooDark &&
         !tooBright &&
         !hasGlare &&
-        !tooFar &&
-        !tooClose &&
         isRoiAligned &&
-        score >= 65.0;
+        (!isSlap || fingerCount >= 3) &&
+        score >= 50.0;
 
     return QualityAssessmentResult(
-      blurScore: double.parse(laplacianVar.toStringAsFixed(2)),
+      blurScore: double.parse(blurScore.toStringAsFixed(2)),
       isBlurry: isBlurry,
       brightness: double.parse(meanBrightness.toStringAsFixed(2)),
       tooDark: tooDark,
       tooBright: tooBright,
-      glareRatio: double.parse(glareRatio.toStringAsFixed(3)),
+      glareRatio: double.parse(glareFraction.toStringAsFixed(3)),
       hasGlare: hasGlare,
       isRoiAligned: isRoiAligned,
       isFingerDetected: isFingerDetected,
+      fingerCount: fingerCount,
+      detectionConf: double.parse(detectionConf.toStringAsFixed(4)),
+      offsetX: double.parse(offsetX.toStringAsFixed(1)),
+      offsetY: double.parse(offsetY.toStringAsFixed(1)),
+      roiGuidance: roiGuidance,
       readinessScore: double.parse(score.toStringAsFixed(1)),
       readinessGrade: grade,
       guidanceText: guidance,
@@ -265,80 +398,7 @@ class OnDeviceQualityService {
     );
   }
 
-  /// Friction Ridge Gradient Frequency & Variance Filter
-  static bool _detectFingerPattern(
-    Uint8List bytes,
-    int width,
-    int height,
-    int bytesPerRow, {
-    bool isSlap = false,
-  }) {
-    if (width < 60 || height < 60 || bytes.isEmpty) return false;
-
-    // Focus analysis on the ROI (central oval for single, wide area for slap)
-    final int startX = isSlap ? (width * 0.10).round() : (width * 0.25).round();
-    final int endX = isSlap ? (width * 0.90).round() : (width * 0.75).round();
-    final int startY = isSlap ? (height * 0.15).round() : (height * 0.25).round();
-    final int endY = isSlap ? (height * 0.85).round() : (height * 0.75).round();
-
-
-    int ridgeEdgePixels = 0;
-    int totalRoiPixels = 0;
-    double roiSum = 0.0;
-    double roiSqSum = 0.0;
-
-    for (int y = startY; y < endY; y += 2) {
-      final int rowCurr = y * bytesPerRow;
-      final int rowPrev = (y - 1) * bytesPerRow;
-      final int rowNext = (y + 1) * bytesPerRow;
-
-      for (int x = startX; x < endX; x += 2) {
-        final int cIdx = rowCurr + x;
-        final int lIdx = rowCurr + (x - 1);
-        final int rIdx = rowCurr + (x + 1);
-        final int tIdx = rowPrev + x;
-        final int bIdx = rowNext + x;
-
-        if (rIdx >= bytes.length ||
-            bIdx >= bytes.length ||
-            lIdx < 0 ||
-            tIdx < 0) {
-          continue;
-        }
-
-        final int center = bytes[cIdx];
-        roiSum += center;
-        roiSqSum += (center * center);
-        totalRoiPixels++;
-
-        final int dx = (bytes[rIdx] - bytes[lIdx]).abs();
-        final int dy = (bytes[bIdx] - bytes[tIdx]).abs();
-        final int grad = dx + dy;
-
-        // Friction ridges exhibit high local gradient transitions
-        if (grad >= 28) {
-          ridgeEdgePixels++;
-        }
-      }
-    }
-
-    if (totalRoiPixels < 100) return false;
-
-    final double roiMean = roiSum / totalRoiPixels;
-    final double roiVariance = (roiSqSum / totalRoiPixels) - (roiMean * roiMean);
-
-    // Reject flat backgrounds (walls, desks, empty space) where variance is near zero
-    if (roiVariance < 80.0) return false;
-
-    // Reject pure black/blown-out regions
-    if (roiMean < 35.0 || roiMean > 225.0) return false;
-
-    final double edgeRatio = ridgeEdgePixels / totalRoiPixels;
-    final double minRatio = isSlap ? 0.08 : 0.20;
-    return edgeRatio >= minRatio;
-  }
-
-  /// Fast Laplacian Kernel Convolution on Luminance Buffer with Out-of-Bounds Protection
+  /// Exact discrete Laplacian convolution variance matching cv2.Laplacian(gray, cv2.CV_64F).var()
   static double _computeLaplacianVariance(
     Uint8List bytes,
     int width,
@@ -372,6 +432,7 @@ class OnDeviceQualityService {
         final int left = bytes[lIdx];
         final int right = bytes[rIdx];
 
+        // 4-neighbor discrete Laplacian kernel [[0, 1, 0], [1, -4, 1], [0, 1, 0]]
         final int lap = top + bottom + left + right - (4 * center);
         sum += lap;
         sqSum += (lap * lap);
@@ -383,9 +444,5 @@ class OnDeviceQualityService {
     final double mean = sum / count;
     final double variance = (sqSum / count) - (mean * mean);
     return variance > 0 ? variance : 0.0;
-  }
-
-  static bool _checkRoiAlignment(int width, int height) {
-    return width >= 200 && height >= 200;
   }
 }

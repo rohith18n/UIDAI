@@ -91,7 +91,7 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
             onImageCaptured: _process,
             disabled: _loading,
             mode: CaptureMode.slap,
-            overlayStyle: 'none',
+            overlayStyle: 'slap',
             handSide: _handSide,
           ),
           const SizedBox(height: 16),
@@ -308,7 +308,7 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
   }
 
   Widget _fingerCard(Map f) {
-    final pos = (f['finger_position'] ?? '').toString().replaceAll('_', ' ');
+    final pos = (f['finger_position'] ?? f['position'] ?? '').toString().replaceAll('_', ' ');
     final mins = f['minutiae_count'] ?? 0;
     final conf = (((f['detection_conf'] ?? 0) as num) * 100).toStringAsFixed(0);
     final cropped = f['cropped_b64'];

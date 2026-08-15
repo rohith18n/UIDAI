@@ -1,3 +1,5 @@
+import 'dart:developer' as dev;
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -8,12 +10,36 @@ import 'services/api_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Log all Flutter framework errors
+  FlutterError.onError = (FlutterErrorDetails details) {
+    FlutterError.presentError(details);
+    dev.log(
+      '🔥 [FLUTTER_ERROR] ${details.exceptionAsString()}',
+      name: 'APP.ERROR',
+      error: details.exception,
+      stackTrace: details.stack,
+    );
+    debugPrint(
+      '🔥 [FLUTTER_ERROR] ${details.exceptionAsString()}\n${details.stack}',
+    );
+  };
+
+  // Log all unhandled async errors
+  PlatformDispatcher.instance.onError = (error, stack) {
+    dev.log(
+      '🔥 [ASYNC_ERROR] $error',
+      name: 'APP.ASYNC_ERROR',
+      error: error,
+      stackTrace: stack,
+    );
+    debugPrint('🔥 [ASYNC_ERROR] $error\n$stack');
+    return true;
+  };
+
   // Load persisted server URL before anything tries to call the API.
   await ApiService.init();
   // Request camera permission upfront so it never interrupts the capture flow.
-  // On first install this shows the system dialog here, before any camera
-  // widget is visible — avoids the null-crash that occurs when permission is
-  // granted mid-initialization.
   await Permission.camera.request();
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,

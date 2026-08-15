@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../theme/app_theme.dart';
-import '../services/api_service.dart';
 import '../services/ondevice_quality_service.dart';
 import '../models/capture_mode.dart';
 
@@ -161,7 +160,8 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       await _ctrl?.dispose();
       _ctrl = CameraController(
         cam,
-        ResolutionPreset.veryHigh, // Highest optical clarity for ridge detection
+        ResolutionPreset
+            .veryHigh, // Highest optical clarity for ridge detection
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
@@ -178,9 +178,10 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         _maxZoom = 1.0;
       }
 
-      final double defaultZoom = _isSlap
-          ? 1.0
-          : (_lensDirection == CameraLensDirection.front ? 1.0 : 2.0);
+      final double defaultZoom =
+          _isSlap
+              ? 1.0
+              : (_lensDirection == CameraLensDirection.front ? 1.0 : 2.0);
       _zoom = defaultZoom.clamp(_minZoom, _maxZoom);
       try {
         await _ctrl!.setZoomLevel(_zoom);
@@ -414,67 +415,52 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         List<String> issuesList = [];
 
         try {
-          // 1. Try Backend Quality Check (YOLO detector + blur + brightness + glare)
-          final qRes = await (_isSlap
-              ? ApiService.slapQualityCheck(stable)
-              : ApiService.qualityCheck(stable));
-          if (qRes.isNotEmpty) {
-            final fingerDetected = qRes['finger_detected'] == true;
-            final isQPassed = qRes['passed'] == true;
-            final issues =
-                (qRes['issues'] as List?)
-                    ?.map((e) => e.toString())
-                    .toList() ??
-                [];
-            final guide = (qRes['guidance'] ?? '').toString();
-
-            if (!fingerDetected) {
-              passed = false;
-              guideMsg = _isSlap
+          // 100% On-Device Quality Evaluation (Sub-20ms)
+          final fileBytes = await stable.readAsBytes();
+          final localQuality = OnDeviceQualityService.evaluateYPlane(
+            yPlaneBytes: fileBytes,
+            width: 1080,
+            height: 1920,
+            bytesPerRow: 1080,
+            isSlap: _isSlap,
+          );
+          passed = localQuality.isPassed;
+          guideMsg = localQuality.guidanceText;
+          if (!localQuality.isFingerDetected) {
+            issuesList.add(
+              _isSlap
                   ? 'No hand detected — place 4 fingers flat inside guide'
-                  : 'No fingerprint detected — position finger inside oval';
-              issuesList = ['No finger detected in view'];
-            } else if (!isQPassed) {
-              passed = false;
-              guideMsg = guide.isNotEmpty ? guide : 'Quality check failed';
-              issuesList = issues;
-            } else {
-              passed = true;
-              guideMsg = _isSlap ? '✓ Slap hand is clear & ready' : '✓ Fingerprint is clear & ready';
-              issuesList = [];
-            }
-          } else {
-            // 2. Fallback to On-Device Quality Service
-            final fileBytes = await stable.readAsBytes();
-            final localQuality = OnDeviceQualityService.evaluateYPlane(
-              yPlaneBytes: fileBytes,
-              width: 1080,
-              height: 1920,
-              bytesPerRow: 1080,
-              isSlap: _isSlap,
+                  : 'No finger detected inside oval',
             );
-            passed = localQuality.isPassed;
-            guideMsg = localQuality.guidanceText;
-            if (!localQuality.isFingerDetected) {
-              issuesList.add('No finger detected inside oval');
-            }
-            if (localQuality.isBlurry) {
-              issuesList.add('Finger is blurry — tap screen to focus 🔍');
-            }
-            if (localQuality.tooDark) {
-              issuesList.add('Too dark — turn on flash 💡');
-              _setAutoFlash(true);
-            }
-            if (localQuality.tooBright) {
-              issuesList.add('Too bright — avoid direct glare');
-            }
-            if (localQuality.hasGlare) {
-              issuesList.add('Glare detected — tilt finger away from light');
-            }
+          } else if (_isSlap && localQuality.fingerCount < 3) {
+            issuesList.add('Place all 4 fingers flat inside guide');
+          }
+          if (localQuality.isBlurry) {
+            issuesList.add('Finger is blurry — tap screen to focus 🔍');
+          }
+          if (localQuality.tooDark) {
+            issuesList.add('Too dark — turn on flash 💡');
+            _setAutoFlash(true);
+          }
+          if (localQuality.tooBright) {
+            issuesList.add('Too bright — avoid direct glare');
+          }
+          if (localQuality.hasGlare) {
+            issuesList.add('Glare detected — tilt finger away from light');
+          }
+          if (!localQuality.isRoiAligned && localQuality.roiGuidance.isNotEmpty) {
+            issuesList.add(localQuality.roiGuidance);
+          }
+          if (passed) {
+            guideMsg =
+                _isSlap
+                    ? '✓ Slap hand is clear & ready'
+                    : '✓ Fingerprint is clear & ready';
           }
         } catch (_) {
           passed = true;
-          guideMsg = 'Fingerprint image captured';
+          guideMsg =
+              _isSlap ? '✓ Slap hand captured' : '✓ Fingerprint image captured';
         }
 
         if (!mounted) return;
@@ -608,10 +594,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
           _guidance = passed ? '✓ Good — hold still' : guidance;
           _guidanceColor = passed ? YS.amber : Colors.orangeAccent;
           _qualityScore = score;
-          _roiGuidance =
-              (!localQuality.isRoiAligned)
-                  ? 'Position finger inside the target oval'
-                  : '';
+          _roiGuidance = localQuality.roiGuidance;
         });
       }
 

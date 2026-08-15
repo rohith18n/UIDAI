@@ -849,8 +849,9 @@ def detect_minutiae(preprocessed, threshold=0.3, nms_size=5):
     else:
         gray = preprocessed
     orig_h, orig_w = gray.shape
-    enh  = enhance_for_minutiae(gray)
-    rsz  = cv2.resize(enh, (256,256)).astype(np.float32) / 255.0
+    gray_256 = cv2.resize(gray, (256, 256))
+    enh  = enhance_for_minutiae(gray_256)
+    rsz  = enh.astype(np.float32) / 255.0
     t    = torch.FloatTensor(rsz).unsqueeze(0).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
         loc, cos_m, sin_m, typ = model(t)
@@ -888,7 +889,13 @@ def create_visualization(preprocessed, minutiae):
     return vis
 
 def img_to_b64(img):
-    _, buf = cv2.imencode(".png", img)
+    if img is None:
+        return ""
+    h, w = img.shape[:2]
+    if max(h, w) > 800:
+        scale = 800.0 / max(h, w)
+        img = cv2.resize(img, (int(w * scale), int(h * scale)))
+    _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
     return base64.b64encode(buf).decode()
 
 #____________________________Adding comparision function__________________________________________________
@@ -1577,8 +1584,8 @@ def enroll():
 
         # Quality gate on finger ROI (not full frame — avoids false pass on blurry finger)
         raw = cv2.imread(path)
-        qc  = run_quality_gate(raw)
-        if not qc.get("finger_detected", True):
+        eval_img, eval_mask, meta = prepare_quality_roi(raw)
+        if not meta.get("finger_detected", True):
             return jsonify({
                 "success": False,
                 "quality_failed": True,
@@ -1586,6 +1593,8 @@ def enroll():
                 "guidance": "No fingerprint detected — please position your finger clearly in view",
                 "issues": ["No fingerprint detected — place finger in view"],
             }), 422
+        qc = quality_gate(eval_img, mask=eval_mask)
+        qc.update(meta)
         if not qc["passed"]:
             return jsonify({
                 "success": False,
@@ -1596,7 +1605,8 @@ def enroll():
             }), 422
 
         # Pipeline
-        cropped, det_conf = detect_and_crop(path)
+        cropped = eval_img
+        det_conf = meta.get("detection_conf") or 1.0
         liveness = check_liveness(cropped)
         if not liveness.get("is_live", True):
             return jsonify({
@@ -1606,7 +1616,7 @@ def enroll():
                 "liveness_confidence": liveness.get("confidence", 0.0),
             }), 422
 
-        preprocessed = preprocess_fingerprint(cropped)
+        preprocessed = preprocess_fingerprint(cropped, mask=eval_mask)
         minutiae      = detect_minutiae(preprocessed)
 
         if len(minutiae) < 12:
@@ -1734,8 +1744,8 @@ def enroll_preprocessed():
             return jsonify({"success": False, "error": "Invalid image format"}), 400
 
         # 1. Quality gate & finger detection check
-        qc = run_quality_gate(cropped)
-        if not qc.get("finger_detected", True):
+        eval_img, eval_mask, meta = prepare_quality_roi(cropped)
+        if not meta.get("finger_detected", True):
             return jsonify({
                 "success": False,
                 "quality_failed": True,
@@ -1743,6 +1753,8 @@ def enroll_preprocessed():
                 "guidance": "No fingerprint detected — place finger in view",
                 "issues": ["No fingerprint detected — place finger in view"],
             }), 422
+        qc = quality_gate(eval_img, mask=eval_mask)
+        qc.update(meta)
         if not qc["passed"]:
             return jsonify({
                 "success": False,
@@ -1753,7 +1765,7 @@ def enroll_preprocessed():
             }), 422
 
         # 2. Liveness check
-        liveness = check_liveness(cropped)
+        liveness = check_liveness(eval_img)
         if not liveness.get("is_live", True):
             return jsonify({
                 "success": False,
@@ -1763,7 +1775,7 @@ def enroll_preprocessed():
             }), 422
 
         # 3. Preprocess & Minutiae extraction
-        preprocessed = preprocess_fingerprint(cropped)
+        preprocessed = preprocess_fingerprint(eval_img, mask=eval_mask)
         minutiae = detect_minutiae(preprocessed)
 
         # 4. Strict Minutiae Count Gate (minimum 12 minutiae for valid UIDAI biometric enrollment)
@@ -1950,20 +1962,18 @@ def process():
         # Use run_quality_gate so blur is measured on the cropped finger ROI —
         # consistent with every other endpoint and much harder to fool with a
         # blurry full-frame image that happens to have a sharp background.
-        qc = run_quality_gate(raw)
+        eval_img, eval_mask, meta = prepare_quality_roi(raw)
+        qc = quality_gate(eval_img, mask=eval_mask)
+        qc.update(meta)
 
         # Still run the full pipeline so the visualizer always has images to show,
         # but flag quality status so the app can surface the warning.
-        cropped, det_conf = detect_and_crop(path)
+        cropped = eval_img
+        det_conf = meta.get("detection_conf") or 1.0
         liveness = check_liveness(cropped)
-        preprocessed = preprocess_fingerprint(cropped)
+        preprocessed = preprocess_fingerprint(cropped, mask=eval_mask)
         minutiae = detect_minutiae(preprocessed) if "minutiae" in global_models else []
         vis      = create_visualization(preprocessed, minutiae) if minutiae else preprocessed
-
-        # Include the original image in pipeline steps so the visualizer can
-        # display it at step 1.
-        _, orig_buf = cv2.imencode(".png", raw)
-        orig_b64 = base64.b64encode(orig_buf).decode()
 
         return jsonify({
             "success":          True,
@@ -1973,7 +1983,7 @@ def process():
             "minutiae_count":   len(minutiae),
             "minutiae":         minutiae,
             "images": {
-                "original":       orig_b64,
+                "original":       img_to_b64(raw),
                 "cropped":        img_to_b64(cropped),
                 "preprocessed":   img_to_b64(preprocessed),
                 "visualization":  img_to_b64(vis),

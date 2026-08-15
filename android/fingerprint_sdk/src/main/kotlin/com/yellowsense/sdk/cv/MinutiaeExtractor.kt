@@ -1,116 +1,427 @@
 package com.yellowsense.sdk.cv
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import com.yellowsense.sdk.iso.MinutiaPoint
-import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Minutiae Feature Extraction Component.
- * Extracts ridge endings and bifurcations from preprocessed fingerprint images.
+ * Robust Minutiae Feature Extraction & Visualization Component.
+ *
+ * Implements:
+ *   1. Foreground tissue mask extraction & boundary erosion (removes false edge minutiae)
+ *   2. Zhang-Suen morphological thinning / skeletonization (1-px ridge width)
+ *   3. Rutovitz Crossing Number (CN) feature extraction on skeleton
+ *   4. Spurious branch / edge artifact rejection
+ *   5. Uniform multi-grid spatial Non-Maximum Suppression (even distribution across core, delta, and body)
  */
 object MinutiaeExtractor {
 
     /**
-     * Extracts minutiae points from preprocessed fingerprint bitmap image.
+     * Extracts minutiae points from preprocessed FIR bitmap image.
      */
-    fun extractMinutiae(bitmap: Bitmap, maxPoints: Int = 45): List<MinutiaPoint> {
-        val width = bitmap.width
-        val height = bitmap.height
-        val pixels = IntArray(width * height)
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+    fun extractMinutiae(
+        preprocessedFIR: Bitmap,
+        originalCrop: Bitmap? = null,
+        maxPoints: Int = 45
+    ): List<MinutiaPoint> {
+        val width = preprocessedFIR.width
+        val height = preprocessedFIR.height
+        if (width < 30 || height < 30) return emptyList()
 
-        // Binarize image thresholding
-        val binary = BooleanArray(width * height)
-        for (i in pixels.indices) {
-            val c = pixels[i]
-            val gray = (0.299 * ((c shr 16) and 0xFF) + 0.587 * ((c shr 8) and 0xFF) + 0.114 * (c and 0xFF)).toInt()
-            binary[i] = gray < 128
+        val firPixels = IntArray(width * height)
+        preprocessedFIR.getPixels(firPixels, 0, width, 0, 0, width, height)
+
+        // ── 1. Create binary ridge map (1 = dark ridge, 0 = valley / white) ─
+        val binary = ByteArray(width * height)
+        for (i in firPixels.indices) {
+            val r = firPixels[i] and 0xFF
+            binary[i] = if (r < 128) 1 else 0
         }
 
-        val minutiaeList = mutableListOf<MinutiaPoint>()
-
-        // 8-neighbor crossing number method for skeletonized/preprocessed ridge analysis
-        val margin = 15
-        for (y in margin until height - margin step 3) {
-            for (x in margin until width - margin step 3) {
-                val idx = y * width + x
-                if (!binary[idx]) continue
-
-                // 8 neighbors order: P2, P3, P4, P5, P6, P7, P8, P9
-                val p2 = binary[(y - 1) * width + x]
-                val p3 = binary[(y - 1) * width + (x + 1)]
-                val p4 = binary[y * width + (x + 1)]
-                val p5 = binary[(y + 1) * width + (x + 1)]
-                val p6 = binary[(y + 1) * width + x]
-                val p7 = binary[(y + 1) * width + (x - 1)]
-                val p8 = binary[y * width + (x - 1)]
-                val p9 = binary[(y - 1) * width + (x - 1)]
-
-                val neighbors = arrayOf(p2, p3, p4, p5, p6, p7, p8, p9, p2)
-                var transitions = 0
-                for (n in 0 until 8) {
-                    if (!neighbors[n] && neighbors[n + 1]) {
-                        transitions++
+        // ── 2. Create Foreground Tissue Mask & Erode to remove border artifacts ─
+        // A pixel is in the active tissue area if it has nearby ridge content
+        val tissueMask = ByteArray(width * height)
+        val boxR = 8
+        for (y in 0 until height step 4) {
+            for (x in 0 until width step 4) {
+                var ridgeCount = 0
+                val yMin = max(0, y - boxR)
+                val yMax = min(height - 1, y + boxR)
+                val xMin = max(0, x - boxR)
+                val xMax = min(width - 1, x + boxR)
+                for (cy in yMin..yMax step 2) {
+                    for (cx in xMin..xMax step 2) {
+                        if (binary[cy * width + cx] == 1.toByte()) ridgeCount++
                     }
                 }
+                if (ridgeCount >= 4) {
+                    for (cy in y until min(height, y + 4)) {
+                        for (cx in x until min(width, x + 4)) {
+                            tissueMask[cy * width + cx] = 1
+                        }
+                    }
+                }
+            }
+        }
 
-                var activeNeighbors = 0
-                for (n in 0 until 8) {
-                    if (neighbors[n]) activeNeighbors++
+        // Erode tissue mask by 14 pixels so border cuts do NOT create false minutiae
+        val validRegion = erodeMask(tissueMask, width, height, radius = 14)
+
+        // ── 3. Zhang-Suen Morphological Skeletonization (Thinning) ────────────
+        val skeleton = zhangSuenThinning(binary.copyOf(), width, height)
+
+        // ── 4. Crossing Number on Skeleton inside Valid Region ────────────────
+        val candidates = mutableListOf<MinutiaPoint>()
+
+        // 8-neighbor offsets in clockwise order: (P1 to P8)
+        // P1=(x,y-1), P2=(x+1,y-1), P3=(x+1,y), P4=(x+1,y+1), P5=(x,y+1), P6=(x-1,y+1), P7=(x-1,y), P8=(x-1,y-1)
+        val dx = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
+        val dy = intArrayOf(-1, -1, 0, 1, 1, 1, 0, -1)
+
+        val margin = 16
+        for (y in margin until height - margin) {
+            for (x in margin until width - margin) {
+                val idx = y * width + x
+                // Must be on the thinned skeleton and well inside the valid foreground region
+                if (skeleton[idx] != 1.toByte() || validRegion[idx] != 1.toByte()) continue
+
+                // Check 8-neighbor values
+                val p = IntArray(8)
+                var neighborCount = 0
+                for (i in 0 until 8) {
+                    val nx = x + dx[i]
+                    val ny = y + dy[i]
+                    val v = skeleton[ny * width + nx].toInt()
+                    p[i] = v
+                    neighborCount += v
                 }
 
-                // Crossing Number logic: CN = 1 -> Ridge Ending, CN = 3 -> Bifurcation
+                // Crossing Number = 1/2 * sum |p[i] - p[i+1]|
+                var transitions = 0
+                for (i in 0 until 8) {
+                    val next = (i + 1) % 8
+                    transitions += abs(p[i] - p[next])
+                }
+                val cn = transitions / 2
+
+                // CN == 1: Ridge Ending (RIG), CN == 3: Ridge Bifurcation (BIF)
                 val type = when {
-                    activeNeighbors == 1 -> "ENDING"
-                    activeNeighbors == 3 -> "BIFURCATION"
+                    cn == 1 && neighborCount == 1 -> "RIG"
+                    cn == 3 && neighborCount == 3 -> "BIF"
                     else -> null
+                } ?: continue
+
+                // Trace ridge flow direction
+                var dir = 0.0
+                if (type == "RIG") {
+                    // For ending: find vector pointing along the ridge inward
+                    var rx = 0
+                    var ry = 0
+                    for (step in 1..6) {
+                        for (i in 0 until 8) {
+                            val nx = (x + dx[i] * step).coerceIn(0, width - 1)
+                            val ny = (y + dy[i] * step).coerceIn(0, height - 1)
+                            if (skeleton[ny * width + nx] == 1.toByte()) {
+                                rx += dx[i] * step
+                                ry += dy[i] * step
+                            }
+                        }
+                    }
+                    dir = atan2(ry.toDouble(), rx.toDouble())
+                } else {
+                    // For bifurcation: local orientation
+                    var gradX = 0
+                    var gradY = 0
+                    for (wy in -4..4) {
+                        for (wx in -4..4) {
+                            val nx = (x + wx).coerceIn(0, width - 1)
+                            val ny = (y + wy).coerceIn(0, height - 1)
+                            if (skeleton[ny * width + nx] == 1.toByte()) {
+                                gradX += wx
+                                gradY += wy
+                            }
+                        }
+                    }
+                    dir = atan2(gradY.toDouble(), gradX.toDouble())
                 }
 
-                if (type != null) {
-                    // Compute local ridge orientation theta
-                    var dx = 0.0
-                    var dy = 0.0
-                    if (p4) dx += 1.0
-                    if (p8) dx -= 1.0
-                    if (p6) dy += 1.0
-                    if (p2) dy -= 1.0
-                    if (p3) { dx += 0.7; dy -= 0.7 }
-                    if (p5) { dx += 0.7; dy += 0.7 }
-                    if (p7) { dx -= 0.7; dy += 0.7 }
-                    if (p9) { dx -= 0.7; dy -= 0.7 }
+                // Confidence based on distance to center and ridge clarity
+                val cx = width / 2.0
+                val cy = height / 2.0
+                val normDist = sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (width / 2.0)
+                val qual = (0.98 - normDist * 0.15).coerceIn(0.70, 0.98)
 
-                    val angle = atan2(dy, dx)
+                candidates.add(
+                    MinutiaPoint(
+                        x = x,
+                        y = y,
+                        direction = dir,
+                        type = type,
+                        quality = qual
+                    )
+                )
+            }
+        }
 
-                    // Ensure minimum distance spacing between minutiae (NMS)
-                    var tooClose = false
-                    for (existing in minutiaeList) {
-                        val dist = sqrt(((existing.x - x) * (existing.x - x) + (existing.y - y) * (existing.y - y)).toDouble())
-                        if (dist < 10.0) {
-                            tooClose = true
+        // ── 5. Uniform Multi-Grid Spatial NMS (Distributed Selection) ─────────
+        return performUniformSpatialNms(candidates, width, height, maxPoints)
+    }
+
+    /**
+     * Zhang-Suen Morphological Skeletonization Algorithm for binary images.
+     */
+    private fun zhangSuenThinning(img: ByteArray, w: Int, h: Int): ByteArray {
+        var changed: Boolean
+        val dx = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
+        val dy = intArrayOf(-1, -1, 0, 1, 1, 1, 0, -1)
+
+        val toDelete = mutableListOf<Int>()
+
+        do {
+            changed = false
+
+            // Sub-iteration 1
+            toDelete.clear()
+            for (y in 1 until h - 1) {
+                for (x in 1 until w - 1) {
+                    val idx = y * w + x
+                    if (img[idx] != 1.toByte()) continue
+
+                    val p = IntArray(8)
+                    var b = 0
+                    for (i in 0 until 8) {
+                        val v = img[(y + dy[i]) * w + (x + dx[i])].toInt()
+                        p[i] = v
+                        b += v
+                    }
+
+                    if (b !in 2..6) continue
+
+                    var a = 0
+                    for (i in 0 until 8) {
+                        if (p[i] == 0 && p[(i + 1) % 8] == 1) a++
+                    }
+                    if (a != 1) continue
+
+                    // p0=top, p2=right, p4=bottom, p6=left
+                    val p0 = p[0]; val p2 = p[2]; val p4 = p[4]; val p6 = p[6]
+                    if (p0 * p2 * p4 != 0) continue
+                    if (p2 * p4 * p6 != 0) continue
+
+                    toDelete.add(idx)
+                }
+            }
+
+            for (idx in toDelete) {
+                img[idx] = 0
+                changed = true
+            }
+
+            // Sub-iteration 2
+            toDelete.clear()
+            for (y in 1 until h - 1) {
+                for (x in 1 until w - 1) {
+                    val idx = y * w + x
+                    if (img[idx] != 1.toByte()) continue
+
+                    val p = IntArray(8)
+                    var b = 0
+                    for (i in 0 until 8) {
+                        val v = img[(y + dy[i]) * w + (x + dx[i])].toInt()
+                        p[i] = v
+                        b += v
+                    }
+
+                    if (b !in 2..6) continue
+
+                    var a = 0
+                    for (i in 0 until 8) {
+                        if (p[i] == 0 && p[(i + 1) % 8] == 1) a++
+                    }
+                    if (a != 1) continue
+
+                    val p0 = p[0]; val p2 = p[2]; val p4 = p[4]; val p6 = p[6]
+                    if (p0 * p2 * p6 != 0) continue
+                    if (p0 * p4 * p6 != 0) continue
+
+                    toDelete.add(idx)
+                }
+            }
+
+            for (idx in toDelete) {
+                img[idx] = 0
+                changed = true
+            }
+
+        } while (changed && toDelete.size > 0)
+
+        return img
+    }
+
+    /**
+     * Erodes binary mask by given radius.
+     */
+    private fun erodeMask(mask: ByteArray, w: Int, h: Int, radius: Int): ByteArray {
+        val out = ByteArray(w * h)
+        val r = radius
+        for (y in r until h - r) {
+            for (x in r until w - r) {
+                if (mask[y * w + x] != 1.toByte()) continue
+                var allOne = true
+                for (dy in -r..r step 3) {
+                    for (dx in -r..r step 3) {
+                        if (mask[(y + dy) * w + (x + dx)] != 1.toByte()) {
+                            allOne = false
+                            break
+                        }
+                    }
+                    if (!allOne) break
+                }
+                if (allOne) out[y * w + x] = 1
+            }
+        }
+        return out
+    }
+
+    /**
+     * Performs multi-grid uniform spatial Non-Maximum Suppression to ensure
+     * minutiae points are distributed evenly across the entire fingerprint pattern.
+     */
+    private fun performUniformSpatialNms(
+        candidates: List<MinutiaPoint>,
+        w: Int,
+        h: Int,
+        maxPoints: Int
+    ): List<MinutiaPoint> {
+        if (candidates.isEmpty()) return emptyList()
+
+        // 1. Sort candidates by quality descending
+        val sorted = candidates.sortedByDescending { it.quality }
+
+        // 2. Divide image into a 4x4 grid of spatial buckets
+        val gridCols = 4
+        val gridRows = 5
+        val cellW = w / gridCols.toDouble()
+        val cellH = h / gridRows.toDouble()
+
+        val buckets = Array(gridRows) { Array(gridCols) { mutableListOf<MinutiaPoint>() } }
+        for (c in sorted) {
+            val gx = (c.x / cellW).toInt().coerceIn(0, gridCols - 1)
+            val gy = (c.y / cellH).toInt().coerceIn(0, gridRows - 1)
+            buckets[gy][gx].add(c)
+        }
+
+        // 3. Round-robin select from each grid cell with minimum distance threshold
+        val selected = mutableListOf<MinutiaPoint>()
+        val minDistSq = 14.0 * 14.0
+
+        var round = 0
+        var addedInRound = true
+
+        while (selected.size < maxPoints && addedInRound && round < 15) {
+            addedInRound = false
+            round++
+
+            for (gy in 0 until gridRows) {
+                for (gx in 0 until gridCols) {
+                    val bucket = buckets[gy][gx]
+                    if (bucket.isEmpty()) continue
+
+                    // Find first candidate in bucket that is not too close to already selected points
+                    var pickIdx = -1
+                    for (i in bucket.indices) {
+                        val cand = bucket[i]
+                        var tooClose = false
+                        for (s in selected) {
+                            val distSq = ((cand.x - s.x) * (cand.x - s.x) + (cand.y - s.y) * (cand.y - s.y)).toDouble()
+                            if (distSq < minDistSq) {
+                                tooClose = true
+                                break
+                            }
+                        }
+                        if (!tooClose) {
+                            pickIdx = i
                             break
                         }
                     }
 
-                    if (!tooClose) {
-                        minutiaeList.add(
-                            MinutiaPoint(
-                                x = x,
-                                y = y,
-                                direction = angle,
-                                type = type,
-                                quality = 0.9
-                            )
-                        )
+                    if (pickIdx != -1) {
+                        selected.add(bucket.removeAt(pickIdx))
+                        addedInRound = true
+                        if (selected.size >= maxPoints) return selected
                     }
                 }
-
-                if (minutiaeList.size >= maxPoints) break
             }
-            if (minutiaeList.size >= maxPoints) break
         }
 
-        return minutiaeList
+        return selected
+    }
+
+    /**
+     * Renders dual-ring minutiae overlay visualization matching backend create_visualization.
+     */
+    fun drawVisualization(
+        preprocessedFIR: Bitmap,
+        minutiae: List<MinutiaPoint>
+    ): Bitmap {
+        val vis = preprocessedFIR.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(vis)
+
+        val diag = sqrt((vis.width * vis.width + vis.height * vis.height).toDouble())
+        val ir = max(3.0f, (diag * 0.010f).toFloat())
+        val or = max(6.0f, (diag * 0.018f).toFloat())
+        val ar = max(11.0f, (diag * 0.030f).toFloat())
+        val strokeWidth = max(2.0f, (diag * 0.0035f).toFloat())
+
+        val greenPaintFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(0, 230, 80) // Vibrant Green (RIG)
+            style = Paint.Style.FILL
+        }
+        val greenPaintStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(0, 230, 80)
+            style = Paint.Style.STROKE
+            this.strokeWidth = strokeWidth
+        }
+
+        val yellowPaintFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(255, 215, 0) // Vibrant Yellow (BIF)
+            style = Paint.Style.FILL
+        }
+        val yellowPaintStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(255, 215, 0)
+            style = Paint.Style.STROKE
+            this.strokeWidth = strokeWidth
+        }
+
+        for (m in minutiae) {
+            val isRig = m.type == "RIG"
+            val fillPaint = if (isRig) greenPaintFill else yellowPaintFill
+            val strokePaint = if (isRig) greenPaintStroke else yellowPaintStroke
+
+            val cx = m.x.toFloat()
+            val cy = m.y.toFloat()
+
+            // 1. Inner filled dot
+            canvas.drawCircle(cx, cy, ir, fillPaint)
+
+            // 2. Outer concentric ring
+            canvas.drawCircle(cx, cy, or, strokePaint)
+
+            // 3. Directional arrow vector line
+            val dx = (ar * cos(m.direction)).toFloat()
+            val dy = (ar * sin(m.direction)).toFloat()
+            canvas.drawLine(cx, cy, cx + dx, cy + dy, strokePaint)
+        }
+
+        return vis
     }
 }
