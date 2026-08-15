@@ -31,21 +31,30 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
               backgroundColor: YS.red));
       return;
     }
+    final sw = Stopwatch()..start();
     setState(() { _loading = true; _result = null; });
     try {
       final r = _isSlap
           ? await ApiService.authenticateSlap(
               batch: _region!, image: image, handSide: _handSide)
           : await ApiService.authenticatePreprocessed(batch: _region!, image: image);
+      sw.stop();
+      r['client_total_ms'] = sw.elapsedMilliseconds;
       setState(() { _result = r; _loading = false; });
       if (r['success'] == true) { HapticFeedback.heavyImpact(); }
       else { HapticFeedback.vibrate(); }
     } catch (e) {
+      sw.stop();
       final isOffline = e.toString().contains('SocketException') ||
           e.toString().contains('Connection refused') ||
           e.toString().contains('timed out');
       setState(() {
-        _result = {'success': false, 'error': e.toString(), 'offline': isOffline};
+        _result = {
+          'success': false, 
+          'error': e.toString(), 
+          'offline': isOffline,
+          'client_total_ms': sw.elapsedMilliseconds,
+        };
         _loading = false;
       });
     }
@@ -175,12 +184,19 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
             ),
           if (r['minutiae_count'] != null)
             _row('Minutiae Extracted', '${r['minutiae_count']} points'),
-          if (r['execution_time_ms'] != null ||
-              r['total_execution_time_ms'] != null)
+          if (r['client_total_ms'] != null ||
+              r['execution_time_ms'] != null ||
+              r['total_execution_time_ms'] != null) ...[
             _row(
-              'Processing Time',
-              '${r['total_execution_time_ms'] ?? r['execution_time_ms']} ms',
+              'Complete Process Time',
+              '${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms (${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)}s)',
             ),
+            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
+              _row(
+                'Model Pipeline Time',
+                '${r['total_execution_time_ms']} ms',
+              ),
+          ],
           if (r['mode'] != null)
             _row(
               'Engine Mode',

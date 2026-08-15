@@ -17,6 +17,7 @@ Run:
 """
 
 import os
+import time
 import json
 import base64
 import sqlite3
@@ -85,17 +86,20 @@ def label_fingers(dets, hand_side, finger_order=None):
 
 def process_one_finger(crop_bgr, want_vis=False):
     """ONE cropped finger through the proven preprocess -> minutiae -> ISO chain."""
+    f_start = time.perf_counter()
     liveness     = core.check_liveness(crop_bgr)
     mask         = core.get_segmentation_mask(crop_bgr)
     preprocessed = core.preprocess_fingerprint(crop_bgr, mask=mask)
     minutiae     = core.detect_minutiae(preprocessed)
     iso          = core.export_iso_template(minutiae)
+    elapsed_ms   = int(round((time.perf_counter() - f_start) * 1000))
 
     out = {
         "liveness": liveness,
         "minutiae_count": len(minutiae),
         "minutiae": minutiae,
         "template_b64": base64.b64encode(iso).decode(),
+        "execution_time_ms": elapsed_ms,
     }
     if want_vis:
         vis = core.create_visualization(preprocessed, minutiae)
@@ -126,9 +130,17 @@ def build_composite(image_bgr, placed):
 
 
 def process_slap(image_bgr, hand_side="right", conf=0.15, finger_order=None, want_vis=False):
+    t_start = time.perf_counter()
     dets = core.detect_all_finger_boxes(image_bgr, conf=conf)
     if not dets:
-        return {"finger_count": 0, "fingers": [], "error": "No fingers detected"}
+        elapsed_ms = int(round((time.perf_counter() - t_start) * 1000))
+        return {
+            "finger_count": 0,
+            "fingers": [],
+            "error": "No fingers detected",
+            "execution_time_ms": elapsed_ms,
+            "total_execution_time_ms": elapsed_ms,
+        }
     dets = label_fingers(dets, hand_side, finger_order=finger_order)
 
     fingers = []
@@ -154,12 +166,15 @@ def process_slap(image_bgr, hand_side="right", conf=0.15, finger_order=None, wan
         fingers.append(finger)
 
     total_min = sum(f.get("minutiae_count", 0) for f in fingers if f.get("ok"))
+    total_ms = int(round((time.perf_counter() - t_start) * 1000))
     out = {
         "success": True,
         "finger_count": len(fingers),
         "total_minutiae": total_min,
         "hand_side": hand_side,
         "fingers": fingers,
+        "execution_time_ms": total_ms,
+        "total_execution_time_ms": total_ms,
     }
     if want_vis and placed:
         out["composite_b64"] = core.img_to_b64(build_composite(image_bgr, placed))
@@ -257,6 +272,7 @@ def process_slap_endpoint():
 def enroll_slap_endpoint():
     """Store one ISO 19794-2 template PER detected finger.
     Fields: image(file), name, uid, batch, hand_side, finger_order."""
+    t_start = time.perf_counter()
     img = _read_image()
     if img is None:
         return jsonify({"error": "No image"}), 400
@@ -297,6 +313,7 @@ def enroll_slap_endpoint():
     con.commit()
     con.close()
 
+    total_ms = int(round((time.perf_counter() - t_start) * 1000))
     return jsonify({
         "success": True,
         "uid": uid,
@@ -306,6 +323,8 @@ def enroll_slap_endpoint():
         "total_minutiae": total_minutiae,
         "enrolled_fingers": saved,
         "finger_count": len(saved),
+        "execution_time_ms": total_ms,
+        "total_execution_time_ms": total_ms,
     })
 
 
@@ -509,6 +528,7 @@ def _best_finger_match(probe_min, user_rows):
 @app.route("/authenticate_slap", methods=["POST"])
 def authenticate_slap_endpoint():
     try:
+        t_start = time.perf_counter()
         batch = request.form.get("batch", "").strip()
         hand_side = request.form.get("hand_side", "right")
         if not batch:
@@ -588,6 +608,7 @@ def authenticate_slap_endpoint():
 
             success = best_agg >= MATCH_THRESH and best_uid is not None
             now = datetime.utcnow().isoformat()
+            total_ms = int(round((time.perf_counter() - t_start) * 1000))
             if success:
                 avg_conf = (sum(m["confidence"] for m in best_matches)
                             / max(1, len(best_matches)))
@@ -609,6 +630,8 @@ def authenticate_slap_endpoint():
                     "confidence": round(best_agg, 5),
                     "threshold": MATCH_THRESH,
                     "matched_fingers": best_matches,
+                    "execution_time_ms": total_ms,
+                    "total_execution_time_ms": total_ms,
                 })
             else:
                 con.execute(
@@ -624,6 +647,8 @@ def authenticate_slap_endpoint():
                     "message": "No match found",
                     "confidence": round(best_agg, 5),
                     "threshold": MATCH_THRESH,
+                    "execution_time_ms": total_ms,
+                    "total_execution_time_ms": total_ms,
                 })
         finally:
             con.close()
@@ -636,6 +661,7 @@ def authenticate_slap_endpoint():
 @app.route("/verify_slap", methods=["POST"])
 def verify_slap_endpoint():
     try:
+        t_start = time.perf_counter()
         uid = request.form.get("uid", "").strip()
         batch = request.form.get("batch", "").strip()
         hand_side = request.form.get("hand_side", "right")
@@ -702,6 +728,7 @@ def verify_slap_endpoint():
             avg_conf = (sum(m["confidence"] for m in matched_fingers)
                         / max(1, len(matched_fingers)))
 
+            total_ms = int(round((time.perf_counter() - t_start) * 1000))
             return jsonify({
                 "success": True,
                 "matched": matched,
@@ -712,6 +739,8 @@ def verify_slap_endpoint():
                 "avg_confidence": round(avg_conf, 5),
                 "threshold": MATCH_THRESH,
                 "matched_fingers": matched_fingers,
+                "execution_time_ms": total_ms,
+                "total_execution_time_ms": total_ms,
             })
         finally:
             con.close()

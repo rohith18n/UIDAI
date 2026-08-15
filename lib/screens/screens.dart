@@ -109,6 +109,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
           backgroundColor: YS.red));
       return;
     }
+    final sw = Stopwatch()..start();
     setState(() { _loading = true; _result = null; });
     try {
       final r = _isSlap
@@ -121,16 +122,24 @@ class _VerifyScreenState extends State<VerifyScreen> {
               uid: _uidCtrl.text.trim(),
               batch: _region!,
               image: image);
+      sw.stop();
+      r['client_total_ms'] = sw.elapsedMilliseconds;
       setState(() { _result = r; _loading = false; });
       if (r['matched'] == true) { HapticFeedback.heavyImpact(); }
       else { HapticFeedback.vibrate(); }
     } catch (e) {
+      sw.stop();
       final msg = e.toString();
       final isOffline = msg.contains('SocketException') ||
           msg.contains('Connection refused') ||
           msg.contains('timed out');
       setState(() {
-        _result = {'success': false, 'error': e.toString(), 'offline': isOffline};
+        _result = {
+          'success': false,
+          'error': e.toString(),
+          'offline': isOffline,
+          'client_total_ms': sw.elapsedMilliseconds,
+        };
         _loading = false;
       });
     }
@@ -267,6 +276,20 @@ class _VerifyScreenState extends State<VerifyScreen> {
           const SizedBox(height: 4),
           Text('${(score * 100).toStringAsFixed(1)}%  (threshold 25%)',
               style: YS.label(11, color: YS.inkLight)),
+          if (r['client_total_ms'] != null ||
+              r['execution_time_ms'] != null ||
+              r['total_execution_time_ms'] != null) ...[
+            const SizedBox(height: 6),
+            _row(
+              'Complete Process Time',
+              '${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms (${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)}s)',
+            ),
+            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
+              _row(
+                'Model Pipeline Time',
+                '${r['total_execution_time_ms']} ms',
+              ),
+          ],
           if (matchedFingers != null && matchedFingers.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text('Matched fingers:', style: YS.label(11, color: YS.inkMid)),
@@ -314,6 +337,7 @@ class _QcScreenState extends State<QcScreen> {
   bool get _isSlap => widget.mode == CaptureMode.slap;
 
   Future<void> _run(File image) async {
+    final sw = Stopwatch()..start();
     setState(() { _loading = true; _result = null; _readiness = null; });
     try {
       final results = _isSlap
@@ -322,6 +346,11 @@ class _QcScreenState extends State<QcScreen> {
               ApiService.process(image),
               ApiService.readiness(image),
             ]);
+      sw.stop();
+      results[0]['client_total_ms'] = sw.elapsedMilliseconds;
+      if (results.length > 1) {
+        results[1]['client_total_ms'] = sw.elapsedMilliseconds;
+      }
       setState(() {
         if (_isSlap) {
           _result = results[0];
@@ -332,11 +361,17 @@ class _QcScreenState extends State<QcScreen> {
         _loading   = false;
       });
     } catch (e) {
+      sw.stop();
       final isOffline = e.toString().contains('SocketException') ||
           e.toString().contains('Connection refused') ||
           e.toString().contains('timed out');
       setState(() {
-        _result = {'success': false, 'error': e.toString(), 'offline': isOffline};
+        _result = {
+          'success': false,
+          'error': e.toString(),
+          'offline': isOffline,
+          'client_total_ms': sw.elapsedMilliseconds,
+        };
         _loading = false;
       });
     }
@@ -508,6 +543,8 @@ class _QcScreenState extends State<QcScreen> {
         _qcRow('Liveness Conf', '${((liveness['confidence'] ?? 0) * 100).toStringAsFixed(1)}%', YS.inkMid),
         Divider(color: YS.stroke, height: 24),
         _qcRow('Minutiae',    '${r['minutiae_count'] ?? 0}', YS.amber),
+        if (r['client_total_ms'] != null || r['total_execution_time_ms'] != null || r['execution_time_ms'] != null)
+          _qcRow('Time Taken', '${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms', YS.blue),
       ]),
     );
   }
@@ -548,6 +585,10 @@ class _QcScreenState extends State<QcScreen> {
           const SizedBox(width: 8),
           _statPill(allLive ? 'ALL LIVE' : 'SPOOF MIX',
               allLive ? YS.green : YS.red, allLive ? YS.greenBg : YS.redBg),
+          if (r['client_total_ms'] != null || r['total_execution_time_ms'] != null || r['execution_time_ms'] != null) ...[
+            const SizedBox(width: 8),
+            _statPill('${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms', YS.blue, YS.blueBg),
+          ],
         ]),
         const SizedBox(height: 14),
         ...fingers.map<Widget>((f) => _fingerQcRow(f)),

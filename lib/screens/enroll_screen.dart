@@ -39,6 +39,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
     }
     if (_region == null) { _snack('Select a region'); return; }
     if (_image == null)  { _snack('Capture fingerprint first'); return; }
+    final sw = Stopwatch()..start();
     setState(() { _loading = true; _result = null; });
     try {
       final r = _isSlap
@@ -55,6 +56,8 @@ class _EnrollScreenState extends State<EnrollScreen> {
               batch: _region!,
               image: _image!,
             );
+      sw.stop();
+      r['client_total_ms'] = sw.elapsedMilliseconds;
       setState(() { _result = r; _loading = false; });
       if (r['success'] == true || r['enrolled_fingers'] != null) {
         HapticFeedback.heavyImpact();
@@ -66,11 +69,17 @@ class _EnrollScreenState extends State<EnrollScreen> {
         _snack(err.toString());
       }
     } catch (e) {
+      sw.stop();
       final isOffline = e.toString().contains('SocketException') ||
           e.toString().contains('Connection refused') ||
           e.toString().contains('timed out');
       setState(() {
-        _result = {'success': false, 'error': e.toString(), 'offline': isOffline};
+        _result = {
+          'success': false,
+          'error': e.toString(),
+          'offline': isOffline,
+          'client_total_ms': sw.elapsedMilliseconds,
+        };
         _loading = false;
       });
     }
@@ -300,20 +309,27 @@ class _EnrollScreenState extends State<EnrollScreen> {
                   ? 'Live ✓'
                   : 'Spoof',
             ),
-            if (r['total_execution_time_ms'] != null ||
-                r['execution_time_ms'] != null)
+          ],
+          if (r['client_total_ms'] != null ||
+              r['total_execution_time_ms'] != null ||
+              r['execution_time_ms'] != null) ...[
+            _row(
+              'Complete Process Time',
+              '${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms (${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)}s)',
+            ),
+            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
               _row(
-                'Processing Time',
-                '${r['total_execution_time_ms'] ?? r['execution_time_ms']} ms',
-              ),
-            if (r['mode'] != null)
-              _row(
-                'Engine Mode',
-                r['mode'] == 'offline_on_device'
-                    ? 'Offline On-Device'
-                    : 'Cloud Hybrid',
+                'Model Pipeline Time',
+                '${r['total_execution_time_ms']} ms',
               ),
           ],
+          if (r['mode'] != null)
+            _row(
+              'Engine Mode',
+              r['mode'] == 'offline_on_device'
+                  ? 'Offline On-Device'
+                  : 'Cloud Hybrid',
+            ),
         ],
         if (r['issues'] != null && (r['issues'] is List) && (r['issues'] as List).isNotEmpty) ...[
           const SizedBox(height: 8),

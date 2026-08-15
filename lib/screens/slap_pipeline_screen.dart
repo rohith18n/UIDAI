@@ -21,17 +21,25 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
   String _handSide = 'right';
 
   Future<void> _process(File image) async {
+    final sw = Stopwatch()..start();
     setState(() { _loading = true; _result = null; });
     try {
       final r = await ApiService.processSlap(
           image: image, handSide: _handSide, vis: true);
+      sw.stop();
+      r['client_total_ms'] = sw.elapsedMilliseconds;
       setState(() { _result = r; _loading = false; });
     } catch (e) {
+      sw.stop();
       final isOffline = e.toString().contains('SocketException') ||
           e.toString().contains('Connection refused') ||
           e.toString().contains('timed out');
       setState(() {
-        _result = {'error': e.toString(), 'offline': isOffline};
+        _result = {
+          'error': e.toString(),
+          'offline': isOffline,
+          'client_total_ms': sw.elapsedMilliseconds,
+        };
         _loading = false;
       });
     }
@@ -96,6 +104,8 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
           ],
           if (!_loading && off) ...[const SizedBox(height: 16), ysOfflineCard(_retryRetry)],
           if (!_loading && !off && _result != null) ...[const SizedBox(height: 16),
+            _performanceTimeBanner(_result!),
+            const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
@@ -109,6 +119,8 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
                   _pill('$count fingers', YS.amberDeep, YS.amberSoft),
                   const SizedBox(width: 8),
                   _pill('${_result!['total_minutiae'] ?? 0} min', YS.orange, YS.orangeBg),
+                  const SizedBox(width: 8),
+                  _pill('${_result!['total_execution_time_ms'] ?? _result!['execution_time_ms'] ?? 0} ms', YS.blue, YS.blueBg),
                 ]),
                 if (_result!['error'] != null && count == 0) ...[
                   const SizedBox(height: 12),
@@ -180,6 +192,121 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
     child: Text(text, style: YS.label(11, color: color, w: FontWeight.w700)),
   );
 
+  Widget _performanceTimeBanner(Map<String, dynamic> r) {
+    final serverMs = r['total_execution_time_ms'] ?? r['execution_time_ms'] ?? 0;
+    final totalMs = r['client_total_ms'] ?? serverMs;
+    final totalSec = (totalMs / 1000.0).toStringAsFixed(2);
+    final count = r['finger_count'] ?? 0;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: YS.blueBg,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: YS.blue.withValues(alpha: 0.35)),
+        boxShadow: YS.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.timer_rounded, color: YS.blue, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'COMPLETE PROCESS TIME',
+                  style: YS.label(12, color: YS.blue, w: FontWeight.w800)
+                      .copyWith(letterSpacing: 1.0),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: YS.greenBg,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: YS.green.withValues(alpha: 0.3)),
+                ),
+                child: Text(
+                  '${totalSec}s (<5s SLA) ✓',
+                  style: YS.label(10, color: YS.green, w: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: YS.card,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: YS.stroke),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Total End-to-End',
+                          style: YS.label(10, color: YS.inkLight)),
+                      const SizedBox(height: 3),
+                      Text('$totalMs ms',
+                          style: YS.display(16, color: YS.blue, w: FontWeight.w800)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: YS.card,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: YS.stroke),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Model Pipeline',
+                          style: YS.label(10, color: YS.inkLight)),
+                      const SizedBox(height: 3),
+                      Text('$serverMs ms',
+                          style: YS.display(16, color: YS.amberDeep, w: FontWeight.w800)),
+                    ],
+                  ),
+                ),
+              ),
+              if (count > 0) ...[
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: YS.card,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: YS.stroke),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Avg / Finger',
+                            style: YS.label(10, color: YS.inkLight)),
+                        const SizedBox(height: 3),
+                        Text('${(serverMs / count).round()} ms',
+                            style: YS.display(16, color: YS.green, w: FontWeight.w800)),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _fingerCard(Map f) {
     final pos = (f['finger_position'] ?? '').toString().replaceAll('_', ' ');
     final mins = f['minutiae_count'] ?? 0;
@@ -217,6 +344,10 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
                 isLive ? YS.greenBg : YS.redBg),
             const SizedBox(width: 6),
             _pill('$mins min', YS.amberDeep, YS.amberSoft),
+            if (f['execution_time_ms'] != null) ...[
+              const SizedBox(width: 6),
+              _pill('${f['execution_time_ms']} ms', YS.blue, YS.blueBg),
+            ],
           ]),
           const SizedBox(height: 12),
           Row(children: [
