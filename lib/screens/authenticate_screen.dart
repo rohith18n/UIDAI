@@ -175,6 +175,19 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
         ]),
         const SizedBox(height: 14),
         if (ok) ...[
+          if (r['client_total_ms'] != null ||
+              r['execution_time_ms'] != null ||
+              r['total_execution_time_ms'] != null) ...[
+            _row(
+              'Complete Process Time',
+              '${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s',
+            ),
+            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
+              _row(
+                'Model Pipeline Time',
+                '${(((r['total_execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s',
+              ),
+          ],
           _row('Name', r['name'] ?? '—'),
           _row('UID', r['uid'] ?? '—'),
           if (avgConf != null)
@@ -184,19 +197,6 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
             ),
           if (r['minutiae_count'] != null)
             _row('Minutiae Extracted', '${r['minutiae_count']} points'),
-          if (r['client_total_ms'] != null ||
-              r['execution_time_ms'] != null ||
-              r['total_execution_time_ms'] != null) ...[
-            _row(
-              'Complete Process Time',
-              '${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms (${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)}s)',
-            ),
-            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
-              _row(
-                'Model Pipeline Time',
-                '${r['total_execution_time_ms']} ms',
-              ),
-          ],
           if (r['mode'] != null)
             _row(
               'Engine Mode',

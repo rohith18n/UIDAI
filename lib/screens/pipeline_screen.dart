@@ -167,7 +167,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Complete Process: ${clientMs}ms (${(clientMs / 1000.0).toStringAsFixed(2)}s)',
+                  'Complete Process: ${(clientMs / 1000.0).toStringAsFixed(2)} s',
                   style: YS.label(13, color: YS.blue, w: FontWeight.w700),
                 ),
               ),
@@ -190,7 +190,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
               Expanded(
                 child: _qcChip(
                   'Total End-to-End',
-                  '${clientMs}ms',
+                  '${(clientMs / 1000.0).toStringAsFixed(2)} s',
                   YS.blue,
                 ),
               ),
@@ -198,7 +198,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
               Expanded(
                 child: _qcChip(
                   'Model Pipeline Stage',
-                  '${execMs}ms',
+                  '${(execMs / 1000.0).toStringAsFixed(2)} s',
                   YS.green,
                 ),
               ),

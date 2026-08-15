@@ -343,7 +343,15 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     if (_capturing || _lastGoodFrame == null) return;
     _capturing = true;
     _killPollLoop();
-    await _setAutoFlash(false);
+    try {
+      await _ctrl?.setFlashMode(FlashMode.off);
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _torchOn = false;
+        _autoFlashOn = false;
+      });
+    }
 
     final stable = await _stableFile(_lastGoodFrame!);
     if (stable == null) {
@@ -379,6 +387,15 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     setState(() => _flashing = false);
     try {
       final xf = await _ctrl!.takePicture();
+      try {
+        await _ctrl!.setFlashMode(FlashMode.off);
+      } catch (_) {}
+      if (mounted) {
+        setState(() {
+          _torchOn = false;
+          _autoFlashOn = false;
+        });
+      }
       final stable = await _stableFile(File(xf.path));
       if (!mounted) return;
       if (stable != null) {

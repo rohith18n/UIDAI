@@ -63,6 +63,9 @@ class _GestureLivenessScreenState extends State<GestureLivenessScreen> {
     setState(() { _checking = true; _result = null; });
     try {
       final xf  = await _ctrl!.takePicture();
+      try {
+        await _ctrl!.setFlashMode(FlashMode.off);
+      } catch (_) {}
       final file = File(xf.path);
       final r = await ApiService.livenessGesture(
           image: file, expectedCount: _expectedCount);

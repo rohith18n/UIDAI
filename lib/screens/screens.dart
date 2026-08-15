@@ -264,6 +264,20 @@ class _VerifyScreenState extends State<VerifyScreen> {
         ]),
         const SizedBox(height: 14),
         if (r['success'] == true) ...[
+          if (r['client_total_ms'] != null ||
+              r['execution_time_ms'] != null ||
+              r['total_execution_time_ms'] != null) ...[
+            _row(
+              'Complete Process Time',
+              '${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s',
+            ),
+            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
+              _row(
+                'Model Pipeline Time',
+                '${(((r['total_execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s',
+              ),
+            const SizedBox(height: 6),
+          ],
           _row('Name', r['name'] ?? '—'),
           _row('UID',  r['uid']  ?? '—'),
           const SizedBox(height: 10),
@@ -276,20 +290,6 @@ class _VerifyScreenState extends State<VerifyScreen> {
           const SizedBox(height: 4),
           Text('${(score * 100).toStringAsFixed(1)}%  (threshold 25%)',
               style: YS.label(11, color: YS.inkLight)),
-          if (r['client_total_ms'] != null ||
-              r['execution_time_ms'] != null ||
-              r['total_execution_time_ms'] != null) ...[
-            const SizedBox(height: 6),
-            _row(
-              'Complete Process Time',
-              '${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms (${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)}s)',
-            ),
-            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
-              _row(
-                'Model Pipeline Time',
-                '${r['total_execution_time_ms']} ms',
-              ),
-          ],
           if (matchedFingers != null && matchedFingers.isNotEmpty) ...[
             const SizedBox(height: 12),
             Text('Matched fingers:', style: YS.label(11, color: YS.inkMid)),
@@ -529,6 +529,10 @@ class _QcScreenState extends State<QcScreen> {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('Pipeline Results', style: YS.display(16, w: FontWeight.w700)),
         const SizedBox(height: 16),
+        if (r['client_total_ms'] != null || r['total_execution_time_ms'] != null || r['execution_time_ms'] != null) ...[
+          _qcRow('Time Taken', '${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s', YS.blue),
+          const SizedBox(height: 4),
+        ],
         _qcRow('Quality Gate',   qcPassed ? 'PASSED' : 'FAILED',   qcPassed ? YS.green : YS.red),
         if (!qcPassed && qc['guidance'] != null)
           Padding(padding: const EdgeInsets.only(left: 16, bottom: 8),
@@ -543,8 +547,6 @@ class _QcScreenState extends State<QcScreen> {
         _qcRow('Liveness Conf', '${((liveness['confidence'] ?? 0) * 100).toStringAsFixed(1)}%', YS.inkMid),
         Divider(color: YS.stroke, height: 24),
         _qcRow('Minutiae',    '${r['minutiae_count'] ?? 0}', YS.amber),
-        if (r['client_total_ms'] != null || r['total_execution_time_ms'] != null || r['execution_time_ms'] != null)
-          _qcRow('Time Taken', '${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms', YS.blue),
       ]),
     );
   }
@@ -587,7 +589,7 @@ class _QcScreenState extends State<QcScreen> {
               allLive ? YS.green : YS.red, allLive ? YS.greenBg : YS.redBg),
           if (r['client_total_ms'] != null || r['total_execution_time_ms'] != null || r['execution_time_ms'] != null) ...[
             const SizedBox(width: 8),
-            _statPill('${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms', YS.blue, YS.blueBg),
+            _statPill('${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s', YS.blue, YS.blueBg),
           ],
         ]),
         const SizedBox(height: 14),

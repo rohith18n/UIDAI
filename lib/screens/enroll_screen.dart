@@ -293,6 +293,19 @@ class _EnrollScreenState extends State<EnrollScreen> {
         ]),
         if (ok) ...[
           const SizedBox(height: 10),
+          if (r['client_total_ms'] != null ||
+              r['total_execution_time_ms'] != null ||
+              r['execution_time_ms'] != null) ...[
+            _row(
+              'Complete Process Time',
+              '${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s',
+            ),
+            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
+              _row(
+                'Model Pipeline Time',
+                '${(((r['total_execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s',
+              ),
+          ],
           if (_isSlap && enrolledFingers != null)
             ...enrolledFingers.map<Widget>((f) {
               final m = f is Map ? f : <String, dynamic>{};
@@ -309,19 +322,6 @@ class _EnrollScreenState extends State<EnrollScreen> {
                   ? 'Live ✓'
                   : 'Spoof',
             ),
-          ],
-          if (r['client_total_ms'] != null ||
-              r['total_execution_time_ms'] != null ||
-              r['execution_time_ms'] != null) ...[
-            _row(
-              'Complete Process Time',
-              '${r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']} ms (${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)}s)',
-            ),
-            if (r['total_execution_time_ms'] != null && r['client_total_ms'] != null && r['total_execution_time_ms'] != r['client_total_ms'])
-              _row(
-                'Model Pipeline Time',
-                '${r['total_execution_time_ms']} ms',
-              ),
           ],
           if (r['mode'] != null)
             _row(
