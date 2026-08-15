@@ -402,12 +402,29 @@ class _PipelineScreenState extends State<PipelineScreen> {
             const SizedBox(height: 12),
             // Image
             if (b64 != null)
-              ClipRRect(
-                borderRadius: const BorderRadius.vertical(bottom: Radius.circular(18)),
-                child: Image.memory(
-                  base64Decode(b64),
-                  width: double.infinity,
-                  fit: BoxFit.contain,
+              GestureDetector(
+                onTap: () => _showImageZoomDialog(step.label, b64),
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(18)),
+                  child: Stack(
+                    alignment: Alignment.bottomRight,
+                    children: [
+                      Image.memory(
+                        base64Decode(b64),
+                        width: double.infinity,
+                        fit: BoxFit.contain,
+                      ),
+                      Container(
+                        margin: const EdgeInsets.all(8),
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.zoom_in_rounded, color: Colors.white, size: 16),
+                      ),
+                    ],
+                  ),
                 ),
               )
             else
@@ -423,6 +440,55 @@ class _PipelineScreenState extends State<PipelineScreen> {
           ]),
         );
       }),
+    );
+  }
+
+  void _showImageZoomDialog(String title, String b64) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black87,
+        insetPadding: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white70),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: InteractiveViewer(
+                minScale: 0.8,
+                maxScale: 6.0,
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                  child: Image.memory(
+                    base64Decode(b64),
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'Pinch to zoom / Pan to inspect minutiae details',
+                style: TextStyle(color: Colors.white54, fontSize: 11),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

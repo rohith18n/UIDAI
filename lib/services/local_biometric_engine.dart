@@ -79,30 +79,46 @@ class LocalBiometricEngine {
       final List<img.Image> preprocFingers = [];
       int totalMinutiae = 0;
 
+      final topFractions = hand.toLowerCase().contains('left')
+          ? [0.40, 0.28, 0.22, 0.30]
+          : [0.30, 0.22, 0.28, 0.40];
+
       for (int i = 0; i < numFingers; i++) {
         final pos = positions[i];
 
         // Slot boundaries EXACTLY matching _SlapOverlayPainter geometry:
         // fingerW = w*15%, gap = w*4.7%
         // startX = (w - (4*fingerW + 3*gap)) / 2 = w*12.95%
-        // Slot i x range: startX + i*(fingerW+gap)  ..  +fingerW
-        // Y: 20% (top of index/ring finger) to 85% (below knuckle@80%)
         final double fingerW = w * 0.15;
         final double gap = w * 0.047;
         final double startX = (w - (4 * fingerW + 3 * gap)) / 2;
 
-        final int cropX = (startX + i * (fingerW + gap)).round().clamp(0, w - 1);
-        final int cropEndX = (startX + i * (fingerW + gap) + fingerW).round().clamp(cropX + 1, w);
+        final double padX = fingerW * 0.08;
+        final int cropX = (startX + i * (fingerW + gap) - padX).round().clamp(0, w - 1);
+        final int cropEndX = (startX + i * (fingerW + gap) + fingerW + padX * 2).round().clamp(cropX + 1, w);
         final int cropW = cropEndX - cropX;
-        final int cropY = (h * 0.20).round();
-        final int cropH = ((h * 0.85) - cropY).round().clamp(10, h - cropY);
+        final int distalH = (cropW * 1.25).round();
+        final int topY = (h * topFractions[i]).round();
+        final int cropY = (topY - distalH * 0.05).round().clamp(0, h - 1);
+        final int cropH = distalH.clamp(10, h - cropY);
 
-        final fingerCrop = img.copyCrop(
+        final rawCrop = img.copyCrop(
           decoded,
           x: cropX,
           y: cropY,
           width: cropW,
-          height: cropH.clamp(10, h - cropY),
+          height: cropH,
+        );
+
+        // Format to square
+        final int maxDim = max(rawCrop.width, rawCrop.height);
+        final fingerCrop = img.Image(width: maxDim, height: maxDim);
+        img.fill(fingerCrop, color: img.ColorRgb8(255, 255, 255));
+        img.compositeImage(
+          fingerCrop,
+          rawCrop,
+          dstX: ((maxDim - rawCrop.width) / 2).round(),
+          dstY: ((maxDim - rawCrop.height) / 2).round(),
         );
 
         final singleRes = await OnDevicePipelineService.processBytesLocally(
@@ -625,22 +641,36 @@ class LocalBiometricEngine {
     return (matchedCount / max(1.0, totalPossible)).clamp(0.0, 1.0);
   }
 
-  /// Builds stitched white composite canvas for slap fingers
+  /// Builds stitched white composite canvas for slap fingers (side-by-side with padding)
   static img.Image _buildCompositeCanvas(List<img.Image> fingers, int w, int h) {
-    final composite = img.Image(width: w, height: h);
-    // Fill white
+    if (fingers.isEmpty) {
+      final blank = img.Image(width: 400, height: 200);
+      img.fill(blank, color: img.ColorRgb8(255, 255, 255));
+      return blank;
+    }
+
+    const int targetFingerH = 260;
+    final List<img.Image> scaledFingers = fingers.map((f) {
+      if (f.height == targetFingerH) return f;
+      final int newW = max(1, (f.width * targetFingerH / f.height).round());
+      return img.copyResize(f, width: newW, height: targetFingerH);
+    }).toList();
+
+    const int padding = 24;
+    const int gap = 16;
+    final int extraGap = scaledFingers.length > 1 ? gap * (scaledFingers.length - 1) : 0;
+    final int totalW = scaledFingers.fold<int>(0, (prev, f) => prev + f.width) +
+        extraGap +
+        padding * 2;
+    final int totalH = targetFingerH + padding * 2;
+
+    final composite = img.Image(width: totalW, height: totalH);
     img.fill(composite, color: img.ColorRgb8(255, 255, 255));
 
-    if (fingers.isEmpty) return composite;
-
-    final int numFingers = fingers.length;
-    final int targetSlotW = (w / numFingers).round();
-
-    for (int i = 0; i < numFingers; i++) {
-      final f = fingers[i];
-      final int drawX = (i * targetSlotW + (targetSlotW - f.width) / 2).round().clamp(0, w - f.width);
-      final int drawY = ((h - f.height) / 2).round().clamp(0, h - f.height);
-      img.compositeImage(composite, f, dstX: drawX, dstY: drawY);
+    int curX = padding;
+    for (final f in scaledFingers) {
+      img.compositeImage(composite, f, dstX: curX, dstY: padding);
+      curX += f.width + gap;
     }
 
     return composite;

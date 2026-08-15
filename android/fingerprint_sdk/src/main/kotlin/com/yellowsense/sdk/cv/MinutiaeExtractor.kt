@@ -294,7 +294,8 @@ object MinutiaeExtractor {
 
     /**
      * Performs multi-grid uniform spatial Non-Maximum Suppression to ensure
-     * minutiae points are distributed evenly across the entire fingerprint pattern.
+     * minutiae points are distributed evenly across the entire fingerprint pattern
+     * with graceful spacing and strict regional quota limits.
      */
     private fun performUniformSpatialNms(
         candidates: List<MinutiaPoint>,
@@ -304,46 +305,56 @@ object MinutiaeExtractor {
     ): List<MinutiaPoint> {
         if (candidates.isEmpty()) return emptyList()
 
-        // 1. Sort candidates by quality descending
-        val sorted = candidates.sortedByDescending { it.quality }
-
-        // 2. Divide image into a 4x4 grid of spatial buckets
+        // 1. Grid of spatial buckets (4 cols x 5 rows)
         val gridCols = 4
         val gridRows = 5
         val cellW = w / gridCols.toDouble()
         val cellH = h / gridRows.toDouble()
 
         val buckets = Array(gridRows) { Array(gridCols) { mutableListOf<MinutiaPoint>() } }
-        for (c in sorted) {
+        for (c in candidates) {
             val gx = (c.x / cellW).toInt().coerceIn(0, gridCols - 1)
             val gy = (c.y / cellH).toInt().coerceIn(0, gridRows - 1)
             buckets[gy][gx].add(c)
         }
 
-        // 3. Round-robin select from each grid cell with minimum distance threshold
+        // Sort each bucket by quality descending
+        for (gy in 0 until gridRows) {
+            for (gx in 0 until gridCols) {
+                buckets[gy][gx].sortByDescending { it.quality }
+            }
+        }
+
+        // 2. Minimum distance threshold between any two minutiae points (at least 20px or 7.5% of dimension)
+        val minDistance = max(20.0, (min(w, h) * 0.075).toDouble())
+        val minDistSq = minDistance * minDistance
+
+        // 3. Maximum points per grid bucket (strictly prevents clustering in top pad)
+        val maxPerBucket = 3
+        val bucketCounts = Array(gridRows) { IntArray(gridCols) }
+
         val selected = mutableListOf<MinutiaPoint>()
-        val minDistSq = 14.0 * 14.0
-
-        var round = 0
         var addedInRound = true
+        var round = 0
 
-        while (selected.size < maxPoints && addedInRound && round < 15) {
+        while (selected.size < maxPoints && addedInRound && round < 10) {
             addedInRound = false
             round++
 
             for (gy in 0 until gridRows) {
                 for (gx in 0 until gridCols) {
+                    if (bucketCounts[gy][gx] >= maxPerBucket) continue
                     val bucket = buckets[gy][gx]
                     if (bucket.isEmpty()) continue
 
-                    // Find first candidate in bucket that is not too close to already selected points
                     var pickIdx = -1
                     for (i in bucket.indices) {
                         val cand = bucket[i]
                         var tooClose = false
                         for (s in selected) {
-                            val distSq = ((cand.x - s.x) * (cand.x - s.x) + (cand.y - s.y) * (cand.y - s.y)).toDouble()
-                            if (distSq < minDistSq) {
+                            val dx = (cand.x - s.x).toDouble()
+                            val dy = (cand.y - s.y).toDouble()
+                            if (dx * dx + dy * dy < minDistSq) {
                                 tooClose = true
                                 break
                             }
@@ -356,6 +367,7 @@ object MinutiaeExtractor {
 
                     if (pickIdx != -1) {
                         selected.add(bucket.removeAt(pickIdx))
+                        bucketCounts[gy][gx]++
                         addedInRound = true
                         if (selected.size >= maxPoints) return selected
                     }
@@ -367,7 +379,8 @@ object MinutiaeExtractor {
     }
 
     /**
-     * Renders dual-ring minutiae overlay visualization matching backend create_visualization.
+     * Renders crisp, professional biometric target overlays (hollow rings + pinpoint center + vector arrows).
+     * Ensures ridges underneath remain 100% visible and sharp.
      */
     fun drawVisualization(
         preprocessedFIR: Bitmap,
@@ -377,49 +390,60 @@ object MinutiaeExtractor {
         val canvas = Canvas(vis)
 
         val diag = sqrt((vis.width * vis.width + vis.height * vis.height).toDouble())
-        val ir = max(3.0f, (diag * 0.010f).toFloat())
-        val or = max(6.0f, (diag * 0.018f).toFloat())
-        val ar = max(11.0f, (diag * 0.030f).toFloat())
-        val strokeWidth = max(2.0f, (diag * 0.0035f).toFloat())
+        val outerRadius = max(3.5f, (diag * 0.009f).toFloat())
+        val centerDotRadius = max(1.0f, (diag * 0.0025f).toFloat())
+        val arrowLength = max(8.0f, (diag * 0.022f).toFloat())
+        val strokeWidth = max(1.3f, (diag * 0.0028f).toFloat())
 
-        val greenPaintFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(0, 230, 80) // Vibrant Green (RIG)
-            style = Paint.Style.FILL
-        }
-        val greenPaintStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(0, 230, 80)
+        // Emerald Green for Endings (RIG) - matching app YS.green
+        val rigStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(0, 200, 83) // #00C853
             style = Paint.Style.STROKE
             this.strokeWidth = strokeWidth
         }
-
-        val yellowPaintFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(255, 215, 0) // Vibrant Yellow (BIF)
+        val rigFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(0, 200, 83)
             style = Paint.Style.FILL
         }
-        val yellowPaintStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.rgb(255, 215, 0)
+
+        // Electric Royal Blue for Bifurcations (BIF) - matching app YS.blue
+        val bifStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(0, 145, 234) // #0091EA
             style = Paint.Style.STROKE
             this.strokeWidth = strokeWidth
+        }
+        val bifFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(0, 145, 234)
+            style = Paint.Style.FILL
         }
 
         for (m in minutiae) {
             val isRig = m.type == "RIG"
-            val fillPaint = if (isRig) greenPaintFill else yellowPaintFill
-            val strokePaint = if (isRig) greenPaintStroke else yellowPaintStroke
+            val strokePaint = if (isRig) rigStrokePaint else bifStrokePaint
+            val fillPaint = if (isRig) rigFillPaint else bifFillPaint
 
             val cx = m.x.toFloat()
             val cy = m.y.toFloat()
 
-            // 1. Inner filled dot
-            canvas.drawCircle(cx, cy, ir, fillPaint)
+            // 1. Precise pinpoint center dot
+            canvas.drawCircle(cx, cy, centerDotRadius, fillPaint)
 
-            // 2. Outer concentric ring
-            canvas.drawCircle(cx, cy, or, strokePaint)
+            // 2. Hollow concentric target ring
+            canvas.drawCircle(cx, cy, outerRadius, strokePaint)
 
-            // 3. Directional arrow vector line
-            val dx = (ar * cos(m.direction)).toFloat()
-            val dy = (ar * sin(m.direction)).toFloat()
-            canvas.drawLine(cx, cy, cx + dx, cy + dy, strokePaint)
+            // 3. Directional flow vector line with arrowhead
+            val dx = (arrowLength * cos(m.direction)).toFloat()
+            val dy = (arrowLength * sin(m.direction)).toFloat()
+            val endX = cx + dx
+            val endY = cy + dy
+            canvas.drawLine(cx, cy, endX, endY, strokePaint)
+
+            // 4. Subtle arrowhead tip
+            val tipAngle1 = m.direction + Math.PI * 0.8
+            val tipAngle2 = m.direction - Math.PI * 0.8
+            val tipLen = arrowLength * 0.35f
+            canvas.drawLine(endX, endY, (endX + tipLen * cos(tipAngle1)).toFloat(), (endY + tipLen * sin(tipAngle1)).toFloat(), strokePaint)
+            canvas.drawLine(endX, endY, (endX + tipLen * cos(tipAngle2)).toFloat(), (endY + tipLen * sin(tipAngle2)).toFloat(), strokePaint)
         }
 
         return vis

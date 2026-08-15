@@ -762,18 +762,30 @@ class OnDevicePipelineService {
       buckets[gy][gx].add(c);
     }
 
-    final List<Map<String, dynamic>> selected = [];
-    const double minDistSq = 14.0 * 14.0;
+    for (int gy = 0; gy < gridRows; gy++) {
+      for (int gx = 0; gx < gridCols; gx++) {
+        buckets[gy][gx].sort((a, b) => ((b['confidence'] as num?) ?? 0)
+            .compareTo((a['confidence'] as num?) ?? 0));
+      }
+    }
 
+    final double minDistance = max(20.0, min(w, h) * 0.075);
+    final double minDistSq = minDistance * minDistance;
+    const int maxPerBucket = 3;
+    final List<List<int>> bucketCounts =
+        List.generate(gridRows, (_) => List.filled(gridCols, 0));
+
+    final List<Map<String, dynamic>> selected = [];
     bool addedInRound = true;
     int round = 0;
 
-    while (selected.length < maxPoints && addedInRound && round < 15) {
+    while (selected.length < maxPoints && addedInRound && round < 10) {
       addedInRound = false;
       round++;
 
       for (int gy = 0; gy < gridRows; gy++) {
         for (int gx = 0; gx < gridCols; gx++) {
+          if (bucketCounts[gy][gx] >= maxPerBucket) continue;
           final bucket = buckets[gy][gx];
           if (bucket.isEmpty) continue;
 
@@ -786,7 +798,9 @@ class OnDevicePipelineService {
             for (final s in selected) {
               final double sx = (s['x'] as num).toDouble();
               final double sy = (s['y'] as num).toDouble();
-              if ((cx - sx) * (cx - sx) + (cy - sy) * (cy - sy) < minDistSq) {
+              final double dx = cx - sx;
+              final double dy = cy - sy;
+              if (dx * dx + dy * dy < minDistSq) {
                 tooClose = true;
                 break;
               }
@@ -799,6 +813,7 @@ class OnDevicePipelineService {
 
           if (pickIdx != -1) {
             selected.add(bucket.removeAt(pickIdx));
+            bucketCounts[gy][gx]++;
             addedInRound = true;
             if (selected.length >= maxPoints) return selected;
           }
@@ -810,7 +825,7 @@ class OnDevicePipelineService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Visualization: dual-ring + directional arrow (matches backend create_visualization)
+  // Visualization: crisp target rings + directional arrows
   // ──────────────────────────────────────────────────────────────────────────
   static img.Image _drawMinutiaeVisualization(
     img.Image preproc,
@@ -819,23 +834,27 @@ class OnDevicePipelineService {
     final vis = img.Image.from(preproc);
     final double diag =
         sqrt(vis.width * vis.width + vis.height * vis.height);
-    final int ir = max(2, (diag * 0.008).round());
-    final int or_ = max(4, (diag * 0.014).round());
-    final int ar = max(8, (diag * 0.024).round());
+    final int centerDot = max(1, (diag * 0.0025).round());
+    final int outerRadius = max(3, (diag * 0.009).round());
+    final int arrowLen = max(8, (diag * 0.022).round());
 
     for (final m in minutiae) {
       final int x = (m['x'] as num).toInt();
       final int y = (m['y'] as num).toInt();
       final double dir = (m['direction'] as num).toDouble();
       final bool isRig = m['type'] == 'RIG';
+      // Emerald Green for RIG (#00C853), Electric Blue for BIF (#0091EA)
       final color =
-          isRig ? img.ColorRgb8(0, 230, 80) : img.ColorRgb8(255, 215, 0);
+          isRig ? img.ColorRgb8(0, 200, 83) : img.ColorRgb8(0, 145, 234);
 
-      img.fillCircle(vis, x: x, y: y, radius: ir, color: color);
-      img.drawCircle(vis, x: x, y: y, radius: or_, color: color);
-      final int ddx = (ar * cos(dir)).round();
-      final int ddy = (ar * sin(dir)).round();
-      img.drawLine(vis, x1: x, y1: y, x2: x + ddx, y2: y + ddy, color: color);
+      // 1. Center pinpoint
+      img.fillCircle(vis, x: x, y: y, radius: centerDot, color: color);
+      // 2. Hollow concentric target ring
+      img.drawCircle(vis, x: x, y: y, radius: outerRadius, color: color);
+      // 3. Directional flow vector line
+      final int endX = x + (arrowLen * cos(dir)).round();
+      final int endY = y + (arrowLen * sin(dir)).round();
+      img.drawLine(vis, x1: x, y1: y, x2: endX, y2: endY, color: color);
     }
 
     return vis;

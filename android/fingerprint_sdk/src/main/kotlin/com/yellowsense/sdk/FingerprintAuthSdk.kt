@@ -283,29 +283,29 @@ class FingerprintAuthSdk(private val context: Context) {
             val cropRects = mutableListOf<Pair<IntArray, Double>>() // ( [x1, y1, x2, y2], conf )
 
             if (yoloDets.size >= 2) {
-                // Use YOLO detections (sorted left to right)
+                // Use YOLO detections (sorted left to right) — crop ONLY distal phalanx pad anchored at apex
                 for (d in yoloDets.take(4)) {
                     val b = d.boundingBox
-                    val padX = (b.width() * 0.08f).toInt()
-                    val padY = (b.height() * 0.08f).toInt()
+                    val bw = b.width()
+                    val bh = b.height()
+                    val distalH = min(bh, bw * 1.25f)
+                    val padX = (bw * 0.05f).toInt()
+                    val padY = (distalH * 0.04f).toInt()
                     val x1 = max(0, b.left.toInt() - padX)
                     val y1 = max(0, b.top.toInt() - padY)
                     val x2 = min(w, b.right.toInt() + padX)
-                    val y2 = min(h, b.bottom.toInt() + padY)
-                    cropRects.add(Pair(intArrayOf(x1, y1, x2, y2), d.confidence.toDouble()))
+                    val y2 = min(h, b.top.toInt() + distalH.toInt() + padY)
+                    val refined = OpencvImageProcessor.refineSkinApexCrop(bitmap, x1, y1, x2, y2)
+                    cropRects.add(Pair(refined, d.confidence.toDouble()))
                 }
             }
 
-            // Fallback: If YOLO detected < 2 fingers, dynamic skin column detection
+            // Fallback: If YOLO detected < 2 fingers, use skin-adaptive slot localization
             if (cropRects.size < 2) {
                 cropRects.clear()
-                val sliceW = w / 4
                 for (i in 0 until 4) {
-                    val x1 = i * sliceW
-                    val x2 = min(w, x1 + sliceW)
-                    val y1 = (h * 0.15f).toInt()
-                    val y2 = (h * 0.85f).toInt()
-                    cropRects.add(Pair(intArrayOf(x1, y1, x2, y2), 0.90))
+                    val rect = OpencvImageProcessor.detectSlotFingerCrop(bitmap, i, isRight)
+                    cropRects.add(Pair(rect, 0.95))
                 }
             }
 
@@ -323,7 +323,8 @@ class FingerprintAuthSdk(private val context: Context) {
 
                 val cropW = max(10, x2 - x1)
                 val cropH = max(10, y2 - y1)
-                val cropped = Bitmap.createBitmap(bitmap, x1, y1, cropW, cropH)
+                val rawCropped = Bitmap.createBitmap(bitmap, x1, y1, cropW, cropH)
+                val cropped = OpencvImageProcessor.toSquareBitmap(rawCropped, Color.WHITE)
 
                 val neuralMask = tfliteEngine.segmentFingertip(cropped)
                 val preproc = OpencvImageProcessor.createContactEquivalentFIR(cropped, neuralMask)
@@ -358,19 +359,29 @@ class FingerprintAuthSdk(private val context: Context) {
                 )
             }
 
-            // ── 2. Build Composite Canvas (exact replica of backend build_composite) ─
-            val composite = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            // ── 2. Build Composite Canvas (4 fingers stitched side-by-side with padding) ─
+            val targetFingerH = 260
+            val scaledPreprocs = placedForComposite.map { (_, pre) ->
+                if (pre.height == targetFingerH) pre
+                else {
+                    val newW = max(1, (pre.width.toFloat() * targetFingerH / pre.height).toInt())
+                    Bitmap.createScaledBitmap(pre, newW, targetFingerH, true)
+                }
+            }
+
+            val pad = 24
+            val gap = 16
+            val totalCompW = scaledPreprocs.sumOf { it.width } + gap * max(0, scaledPreprocs.size - 1) + pad * 2
+            val totalCompH = targetFingerH + pad * 2
+
+            val composite = Bitmap.createBitmap(totalCompW, totalCompH, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(composite)
             canvas.drawColor(Color.WHITE)
 
-            for ((rect, pre) in placedForComposite) {
-                val (x1, y1, x2, y2) = rect
-                val tw = max(1, x2 - x1)
-                val scaledPre = if (pre.width != tw && pre.width > 0) {
-                    val th = max(1, (pre.height.toFloat() * tw / pre.width).toInt())
-                    Bitmap.createScaledBitmap(pre, tw, th, true)
-                } else pre
-                canvas.drawBitmap(scaledPre, x1.toFloat(), y1.toFloat(), null)
+            var curX = pad
+            for (pre in scaledPreprocs) {
+                canvas.drawBitmap(pre, curX.toFloat(), pad.toFloat(), null)
+                curX += pre.width + gap
             }
 
             val compositeB64 = OpencvImageProcessor.bitmapToBase64(composite, 85)

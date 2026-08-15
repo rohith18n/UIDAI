@@ -135,15 +135,28 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
                   style: YS.label(10, color: YS.inkLight, w: FontWeight.w700)
                       .copyWith(letterSpacing: 1.5)),
               const SizedBox(height: 8),
-              Container(
-                height: 180,
-                decoration: BoxDecoration(
-                  color: YS.card,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: YS.stroke),
-                  image: DecorationImage(
-                    fit: BoxFit.contain,
-                    image: MemoryImage(base64Decode(composite)),
+              GestureDetector(
+                onTap: () => _showImageZoomDialog('Slap Composite (4 Fingers)', composite),
+                child: Container(
+                  height: 160,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: YS.stroke),
+                    image: DecorationImage(
+                      fit: BoxFit.contain,
+                      image: MemoryImage(base64Decode(composite)),
+                    ),
+                  ),
+                  alignment: Alignment.bottomRight,
+                  padding: const EdgeInsets.all(8),
+                  child: Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.zoom_in_rounded, color: Colors.white, size: 16),
                   ),
                 ),
               ),
@@ -290,11 +303,11 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Avg / Finger',
-                            style: YS.label(10, color: YS.inkLight)),
+                        Text('Fingers Processed',
+                          style: YS.label(10, color: YS.inkLight)),
                         const SizedBox(height: 3),
-                        Text('${((serverMs / count) / 1000.0).toStringAsFixed(2)} s',
-                            style: YS.display(16, color: YS.green, w: FontWeight.w800)),
+                        Text('$count fingers',
+                          style: YS.display(16, color: YS.amberDeep, w: FontWeight.w800)),
                       ],
                     ),
                   ),
@@ -332,23 +345,38 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            const Icon(Icons.fingerprint_rounded, color: YS.blue, size: 18),
-            const SizedBox(width: 8),
-            Expanded(child: Text(pos.toUpperCase(),
-                style: YS.label(14, w: FontWeight.w700))),
-            _pill('$conf% det', YS.inkMid, YS.cardAlt),
-            const SizedBox(width: 6),
-            _pill(isLive ? '$liveConf% LIVE' : 'SPOOF',
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.fingerprint_rounded, color: YS.blue, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    pos.toUpperCase(),
+                    style: YS.label(15, w: FontWeight.w800),
+                  ),
+                ],
+              ),
+              _pill(
+                isLive ? '$liveConf% LIVE' : 'SPOOF',
                 isLive ? YS.green : YS.red,
-                isLive ? YS.greenBg : YS.redBg),
-            const SizedBox(width: 6),
-            _pill('$mins min', YS.amberDeep, YS.amberSoft),
-            if (f['execution_time_ms'] != null) ...[
-              const SizedBox(width: 6),
-              _pill('${(((f['execution_time_ms'] as num)) / 1000.0).toStringAsFixed(2)} s', YS.blue, YS.blueBg),
+                isLive ? YS.greenBg : YS.redBg,
+              ),
             ],
-          ]),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _pill('$conf% det', YS.inkMid, YS.cardAlt),
+              _pill('$mins minutiae', YS.amberDeep, YS.amberSoft),
+              if (f['execution_time_ms'] != null)
+                _pill('${(((f['execution_time_ms'] as num)) / 1000.0).toStringAsFixed(2)} s', YS.blue, YS.blueBg),
+              _pill('ISO: $isoCode', YS.inkLight, YS.cardAlt),
+            ],
+          ),
           const SizedBox(height: 12),
           Row(children: [
             Expanded(child: _stageTile('1. Cropped',   cropped, 'detect')),
@@ -367,28 +395,105 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
 
   Widget _stageTile(String label, dynamic b64, String kind) {
     final hasImg = b64 != null && (b64 as String).isNotEmpty;
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label, style: YS.label(10, color: YS.inkLight, w: FontWeight.w700)),
-      const SizedBox(height: 4),
-      Container(
-        height: 90,
-        decoration: BoxDecoration(
-          color: kind == 'detect'
-              ? YS.amberSoft
-              : kind == 'enhance'
-                  ? YS.orangeBg
-                  : YS.blueBg,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: YS.stroke),
-          image: hasImg
-              ? DecorationImage(fit: BoxFit.contain,
-                  image: MemoryImage(base64Decode(b64)))
-              : null,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: YS.label(10, color: YS.inkLight, w: FontWeight.w700),
         ),
-        child: !hasImg
-            ? Center(child: Icon(Icons.inbox_rounded, color: YS.inkFaint))
-            : null,
+        const SizedBox(height: 4),
+        AspectRatio(
+          aspectRatio: 1.0,
+          child: GestureDetector(
+            onTap: hasImg
+                ? () => _showImageZoomDialog(label, b64)
+                : null,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: YS.stroke),
+                image: hasImg
+                    ? DecorationImage(
+                        fit: BoxFit.contain,
+                        image: MemoryImage(base64Decode(b64)),
+                      )
+                    : null,
+              ),
+              child: !hasImg
+                  ? Center(child: Icon(Icons.inbox_rounded, color: YS.inkFaint))
+                  : Align(
+                      alignment: Alignment.topRight,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4.0),
+                        child: Container(
+                          padding: const EdgeInsets.all(2),
+                          decoration: BoxDecoration(
+                            color: Colors.black45,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Icon(
+                            Icons.zoom_in_rounded,
+                            color: Colors.white,
+                            size: 12,
+                          ),
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showImageZoomDialog(String title, String b64) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black87,
+        insetPadding: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+              child: Row(
+                children: [
+                  Text(
+                    title,
+                    style: YS.label(15, color: Colors.white, w: FontWeight.w700),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Colors.white),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              constraints: const BoxConstraints(maxHeight: 380, maxWidth: 380),
+              margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: InteractiveViewer(
+                minScale: 1.0,
+                maxScale: 5.0,
+                child: Image.memory(
+                  base64Decode(b64),
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
-    ]);
+    );
   }
 }
