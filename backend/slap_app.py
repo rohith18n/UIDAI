@@ -260,8 +260,12 @@ def enroll_slap_endpoint():
     hand_side = request.form.get("hand_side", "right")
 
     result = process_slap(img, hand_side=hand_side, finger_order=_parse_finger_order())
-    if result["finger_count"] == 0:
-        return jsonify(result), 422
+    if result.get("finger_count", 0) == 0:
+        return jsonify({"success": False, "error": "No slap fingers detected — please place 4 fingers flat and centered in view"}), 422
+
+    total_minutiae = result.get("total_minutiae", sum(f.get("minutiae_count", 0) for f in result.get("fingers", [])))
+    if total_minutiae < 18:
+        return jsonify({"success": False, "error": f"Slap fingerprint not clear — only {total_minutiae} total minutiae points detected (minimum 18 required for enrollment). Please hold steady with good focus."}), 422
 
     con = sqlite3.connect(SLAP_DB)
     now = datetime.utcnow().isoformat()
@@ -305,129 +309,141 @@ DIST_THRESH   = 1
 ANGLE_THRESH  = 1
 ORIENT_THRESH = 1
 RELAX_ITER    = 10
-MATCH_THRESH  = 0.25
-
-
-def _angle_to_bin(theta, bins):
-    return int((theta % (2 * math.pi)) / (2 * math.pi) * bins)
-
-
-def _circ_diff(a, b, bins):
-    d = abs(a - b)
-    return min(d, bins - d)
-
-
-def _euclidean(p1, p2):
-    return math.sqrt((p1["x"] - p2["x"]) ** 2 + (p1["y"] - p2["y"]) ** 2)
-
-
-def _compute_edge(p1, p2):
-    dx = p2["x"] - p1["x"]
-    dy = p2["y"] - p1["y"]
-    dist = math.sqrt(dx * dx + dy * dy)
-    return (
-        int(dist / DIST_BIN_SIZE),
-        _angle_to_bin(math.atan2(dy, dx), ANGLE_BINS),
-        (_angle_to_bin(p2["direction"], ORIENT_BINS) -
-         _angle_to_bin(p1["direction"], ORIENT_BINS)) % ORIENT_BINS,
-    )
-
-
-def _build_graph(tmpl):
-    edges = {}
-    for i in range(len(tmpl)):
-        dists = sorted([((_euclidean(tmpl[i], tmpl[j])), j)
-                        for j in range(len(tmpl)) if j != i])
-        for _, j in dists[:K_NEIGHBORS]:
-            edges[(i, j)] = _compute_edge(tmpl[i], tmpl[j])
-    return edges
-
-
-def _node_compat(n1, n2):
-    if n1["type"] != n2["type"]:
-        return False
-    if _circ_diff(_angle_to_bin(n1["direction"], ORIENT_BINS),
-                  _angle_to_bin(n2["direction"], ORIENT_BINS),
-                  ORIENT_BINS) > ORIENT_THRESH:
-        return False
-    if math.sqrt((n1["x"] - n2["x"]) ** 2 + (n1["y"] - n2["y"]) ** 2) > 25:
-        return False
-    return True
-
-
-def _edge_compat(e1, e2):
-    d1, a1, o1 = e1
-    d2, a2, o2 = e2
-    if abs(d1 - d2) > DIST_THRESH:
-        return 0
-    if _circ_diff(a1, a2, ANGLE_BINS) > ANGLE_THRESH:
-        return 0
-    if _circ_diff(o1, o2, ORIENT_BINS) > ORIENT_THRESH:
-        return 0
-    return math.exp(
-        -(abs(d1 - d2) + _circ_diff(a1, a2, ANGLE_BINS) +
-          _circ_diff(o1, o2, ORIENT_BINS)))
-
-
-def _normalize(tmpl):
-    if not tmpl:
-        return tmpl
-    mx = sum(m["x"] for m in tmpl) / len(tmpl)
-    my = sum(m["y"] for m in tmpl) / len(tmpl)
-    return [{**m, "x": m["x"] - mx, "y": m["y"] - my} for m in tmpl]
-
-
-def _scale(tmpl, target=200):
-    if not tmpl:
-        return tmpl
-    xs = [m["x"] for m in tmpl]
-    ys = [m["y"] for m in tmpl]
-    span = max(max(xs) - min(xs), max(ys) - min(ys), 1)
-    f = target / span
-    return [{**m, "x": m["x"] * f, "y": m["y"] * f} for m in tmpl]
+MATCH_THRESH  = 0.20
 
 
 def match_templates(t1, t2):
-    """MCC graph + relaxation labeling minutiae matcher (0.0–1.0)."""
+    """
+    Robust rotation, translation, and scale-invariant minutiae matcher.
+    Combines multi-angle rigid alignment and local star graph descriptors.
+    Returns match score (0.0 to 1.0).
+    """
     if not t1 or not t2:
         return 0.0
-    ratio = min(len(t1), len(t2)) / max(len(t1), len(t2))
-    if ratio < 0.45:
+    if len(t1) < 4 or len(t2) < 4:
         return 0.0
-    t1 = _scale(_normalize(t1))
-    t2 = _scale(_normalize(t2))
-    e1 = _build_graph(t1)
-    e2 = _build_graph(t2)
-    cands = [(i, j) for i, n1 in enumerate(t1)
-             for j, n2 in enumerate(t2) if _node_compat(n1, n2)]
-    min_c = max(4, int(0.15 * min(len(t1), len(t2))))
-    if len(cands) < min_c:
-        return 0.0
-    P = {c: 1.0 for c in cands}
-    for _ in range(RELAX_ITER):
-        Pn = {}
-        for (i, j) in cands:
-            total = sum(
-                P[(k, l)] * _edge_compat(e1[(i, k)], e2[(j, l)])
-                for (k, l) in cands if k != i and l != j
-                and (i, k) in e1 and (j, l) in e2)
-            Pn[(i, j)] = total
-        norm = sum(Pn.values()) + 1e-6
-        P = {k: v / norm for k, v in Pn.items()}
-    used_i = set()
-    used_j = set()
-    matches = []
-    for (i, j), s in sorted(P.items(), key=lambda x: -x[1]):
-        if s < 0.001:
-            continue
-        if i not in used_i and j not in used_j:
-            matches.append((i, j, s))
-            used_i.add(i)
-            used_j.add(j)
-    if not matches:
-        return 0.0
-    score = 2 * len(matches) / (len(t1) + len(t2)) * ratio
-    return float(max(0.0, min(1.0, score)))
+
+    min_len = min(len(t1), len(t2))
+    max_len = max(len(t1), len(t2))
+
+    # Center coordinates
+    mx1 = sum(m["x"] for m in t1) / len(t1)
+    my1 = sum(m["y"] for m in t1) / len(t1)
+    mx2 = sum(m["x"] for m in t2) / len(t2)
+    my2 = sum(m["y"] for m in t2) / len(t2)
+
+    p1 = [{"x": m["x"] - mx1, "y": m["y"] - my1, "dir": m["direction"]} for m in t1]
+    p2 = [{"x": m["x"] - mx2, "y": m["y"] - my2, "dir": m["direction"]} for m in t2]
+
+    # Search rotation angles between -35° and +35° in 5° steps
+    best_matches = 0
+    dist_thresh = 35.0
+    dir_thresh = math.radians(40)
+
+    angles = [math.radians(deg) for deg in range(-35, 36, 5)]
+
+    for rot in angles:
+        cos_r = math.cos(rot)
+        sin_r = math.sin(rot)
+
+        r_p1 = [
+            {
+                "x": m["x"] * cos_r - m["y"] * sin_r,
+                "y": m["x"] * sin_r + m["y"] * cos_r,
+                "dir": (m["dir"] + rot + math.pi) % (2 * math.pi) - math.pi,
+            }
+            for m in p1
+        ]
+
+        used_j = set()
+        matched = 0
+        for m1 in r_p1:
+            best_d = dist_thresh + 1
+            best_j = -1
+            for j, m2 in enumerate(p2):
+                if j in used_j:
+                    continue
+                d = math.sqrt((m1["x"] - m2["x"]) ** 2 + (m1["y"] - m2["y"]) ** 2)
+                if d < dist_thresh and d < best_d:
+                    ang_diff = abs((m1["dir"] - m2["dir"] + math.pi) % (2 * math.pi) - math.pi)
+                    if ang_diff < dir_thresh:
+                        best_d = d
+                        best_j = j
+            if best_j != -1:
+                used_j.add(best_j)
+                matched += 1
+
+        if matched > best_matches:
+            best_matches = matched
+
+    # Star matching (local neighborhood relative descriptor)
+    def circ_diff_rad(a, b):
+        return abs((a - b + math.pi) % (2 * math.pi) - math.pi)
+
+    def build_stars(tmpl, k=6):
+        stars = []
+        for i, m in enumerate(tmpl):
+            dists = []
+            for j, o in enumerate(tmpl):
+                if i == j: continue
+                dx = o["x"] - m["x"]
+                dy = o["y"] - m["y"]
+                dist = math.sqrt(dx*dx + dy*dy)
+                rel_angle = (math.atan2(dy, dx) - m["direction"] + math.pi) % (2*math.pi) - math.pi
+                rel_dir = (o["direction"] - m["direction"] + math.pi) % (2*math.pi) - math.pi
+                dists.append((dist, rel_angle, rel_dir, j))
+            dists.sort(key=lambda x: x[0])
+            stars.append(dists[:k])
+        return stars
+
+    s1 = build_stars(t1)
+    s2 = build_stars(t2)
+
+    candidate_pairs = []
+    for i, star1 in enumerate(s1):
+        for j, star2 in enumerate(s2):
+            matched_neighbors = 0
+            for (d1, a1, o1, _) in star1:
+                for (d2, a2, o2, _) in star2:
+                    if abs(d1 - d2) < 25 and circ_diff_rad(a1, a2) < dir_thresh and circ_diff_rad(o1, o2) < dir_thresh:
+                        matched_neighbors += 1
+                        break
+            if matched_neighbors >= 2:
+                candidate_pairs.append((i, j, matched_neighbors))
+
+    candidate_pairs.sort(key=lambda x: x[2], reverse=True)
+    star_inliers = 0
+    for (i, j, _) in candidate_pairs[:30]:
+        m1 = t1[i]
+        m2 = t2[j]
+        rot = (m2["direction"] - m1["direction"])
+        cos_r = math.cos(rot)
+        sin_r = math.sin(rot)
+
+        inliers = 0
+        used_j = set()
+        for p1_node in t1:
+            dx = p1_node["x"] - m1["x"]
+            dy = p1_node["y"] - m1["y"]
+            tx = m2["x"] + (dx * cos_r - dy * sin_r)
+            ty = m2["y"] + (dx * sin_r + dy * cos_r)
+            tdir = (p1_node["direction"] + rot + math.pi) % (2*math.pi) - math.pi
+
+            for idx2, p2_node in enumerate(t2):
+                if idx2 in used_j: continue
+                pdist = math.sqrt((tx - p2_node["x"])**2 + (ty - p2_node["y"])**2)
+                if pdist <= dist_thresh and circ_diff_rad(tdir, p2_node["direction"]) <= dir_thresh:
+                    inliers += 1
+                    used_j.add(idx2)
+                    break
+        if inliers > star_inliers:
+            star_inliers = inliers
+
+    max_inliers = max(best_matches, star_inliers)
+    harmonic_score = (2.0 * max_inliers) / (len(t1) + len(t2))
+    subset_score = max_inliers / min_len
+    final_score = max(harmonic_score, subset_score * 0.75)
+    return round(float(min(1.0, max(0.0, final_score))), 4)
 
 
 # ── slap_auth_history table ──────────────────────────────────────────────────

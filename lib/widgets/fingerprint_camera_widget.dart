@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../theme/app_theme.dart';
+import '../services/api_service.dart';
 import '../services/ondevice_quality_service.dart';
 import '../models/capture_mode.dart';
 
@@ -14,6 +15,7 @@ class FingerprintCameraWidget extends StatefulWidget {
   final CaptureMode mode;
   final String overlayStyle;
   final String handSide;
+  final bool autoCapture;
   const FingerprintCameraWidget({
     super.key,
     required this.onImageCaptured,
@@ -21,6 +23,7 @@ class FingerprintCameraWidget extends StatefulWidget {
     this.mode = CaptureMode.single,
     this.overlayStyle = 'oval',
     this.handSide = 'right',
+    this.autoCapture = false,
   });
 
   @override
@@ -31,26 +34,32 @@ class FingerprintCameraWidget extends StatefulWidget {
 class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   CameraController? _ctrl;
-  CameraLensDirection _lensDirection = CameraLensDirection.front;
+  CameraLensDirection _lensDirection = CameraLensDirection.back;
   bool _initializing = false;
   bool _live = false;
   bool _flashing = false;
   bool _torchOn = false;
   bool _autoFlashOn = false;
+  bool _screenLightOn = true;
   File? _captured;
   String? _error;
   double _minZoom = 1.0, _maxZoom = 1.0, _zoom = 2.0;
   Offset? _focusPt;
   Timer? _focusTimer;
 
-  static const Duration _focusSettleDelay = Duration(milliseconds: 700);
+  static const Duration _focusSettleDelay = Duration(milliseconds: 300);
 
-  final bool _autoCapture = false;
+  bool get _autoCapture => widget.autoCapture;
   bool _pollInFlight = false;
   bool _capturing = false;
   bool _pollActive = false;
+  bool _evaluatingCapture = false;
+  bool? _qualityPassed;
+  String _qualityMessage = '';
+  List<String> _qualityIssues = [];
+
   String _roiGuidance = '';
-  String _guidance = 'Place finger in the oval';
+  String _guidance = 'Place finger inside the oval — tap screen to focus';
   Color _guidanceColor = Colors.white60;
   double _qualityScore = 0.0;
   int _passCount = 0;
@@ -59,10 +68,10 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   static const Duration _maxPassGap = Duration(seconds: 3);
 
   int _pollAttempts = 0;
-  static const int _maxPollAttempts = 40;
+  static const int _maxPollAttempts = 80;
 
-  static const int _passesNeeded = 2;
-  static const Duration _pollCooldown = Duration(milliseconds: 250);
+  static const int _passesNeeded = 3;
+  static const Duration _pollCooldown = Duration(milliseconds: 350);
 
   File? _lastGoodFrame;
   bool _tipsVisible = true;
@@ -88,7 +97,9 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       end: 1,
     ).animate(CurvedAnimation(parent: _scanCtrl, curve: Curves.easeInOut));
     _guidance =
-        _isSlap ? 'Place your hand in view' : 'Place finger in the oval';
+        _isSlap
+            ? 'Position 4 fingers flat inside guide — tap Capture'
+            : 'Position finger inside oval — tap screen to focus & Capture';
   }
 
   @override
@@ -150,7 +161,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       await _ctrl?.dispose();
       _ctrl = CameraController(
         cam,
-        ResolutionPreset.high,
+        ResolutionPreset.veryHigh, // Highest optical clarity for ridge detection
         enableAudio: false,
         imageFormatGroup: ImageFormatGroup.jpeg,
       );
@@ -167,20 +178,35 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         _maxZoom = 1.0;
       }
 
-      if (_zoom < _minZoom || _zoom > _maxZoom) {
-        _zoom = (2.0).clamp(_minZoom, _maxZoom);
-      }
+      final double defaultZoom = _isSlap
+          ? 1.0
+          : (_lensDirection == CameraLensDirection.front ? 1.0 : 2.0);
+      _zoom = defaultZoom.clamp(_minZoom, _maxZoom);
       try {
         await _ctrl!.setZoomLevel(_zoom);
       } catch (_) {}
-      try {
-        await _ctrl!.setFlashMode(FlashMode.off);
-      } catch (_) {}
+      bool torchActivated = false;
+      if (_lensDirection == CameraLensDirection.back) {
+        try {
+          await _ctrl!.setFlashMode(FlashMode.torch);
+          torchActivated = true;
+        } catch (_) {
+          try {
+            await _ctrl!.setFlashMode(FlashMode.off);
+          } catch (_) {}
+        }
+      } else {
+        try {
+          await _ctrl!.setFlashMode(FlashMode.off);
+        } catch (_) {}
+      }
 
       if (!mounted) return;
       setState(() {
         _live = true;
         _initializing = false;
+        _torchOn = torchActivated;
+        _autoFlashOn = false;
       });
 
       if (_autoCapture) {
@@ -295,6 +321,10 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       await _ctrl!.setFocusPoint(Offset(x, y));
       await _ctrl!.setExposurePoint(Offset(x, y));
     } catch (_) {}
+    if (_autoCapture) {
+      _pollAttempts = 0;
+      _kickPollLoop();
+    }
   }
 
   Future<File?> _stableFile(File src) async {
@@ -343,7 +373,6 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     if (_ctrl == null || !_ctrl!.value.isInitialized || _capturing) return;
     _capturing = true;
     _killPollLoop();
-    await _setAutoFlash(false);
     if (mounted) setState(() => _flashing = true);
     await Future.delayed(const Duration(milliseconds: 80));
     if (!mounted) return;
@@ -356,14 +385,98 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         setState(() {
           _captured = stable;
           _live = false;
+          _evaluatingCapture = true;
+          _qualityPassed = null;
+          _qualityMessage = 'Analyzing fingerprint quality…';
+          _qualityIssues = [];
         });
-        widget.onImageCaptured(stable);
+
+        // Fast Quality Evaluation on captured frame
+        bool passed = false;
+        String guideMsg = '';
+        List<String> issuesList = [];
+
+        try {
+          // 1. Try Backend Quality Check (YOLO detector + blur + brightness + glare)
+          final qRes = await ApiService.qualityCheck(stable);
+          if (qRes.isNotEmpty) {
+            final fingerDetected = qRes['finger_detected'] == true;
+            final isQPassed = qRes['passed'] == true;
+            final issues =
+                (qRes['issues'] as List?)
+                    ?.map((e) => e.toString())
+                    .toList() ??
+                [];
+            final guide = (qRes['guidance'] ?? '').toString();
+
+            if (!fingerDetected) {
+              passed = false;
+              guideMsg = 'No fingerprint detected — position finger inside oval';
+              issuesList = ['No finger detected in view'];
+            } else if (!isQPassed) {
+              passed = false;
+              guideMsg = guide.isNotEmpty ? guide : 'Quality check failed';
+              issuesList = issues;
+            } else {
+              passed = true;
+              guideMsg = '✓ Fingerprint is clear & ready';
+              issuesList = [];
+            }
+          } else {
+            // 2. Fallback to On-Device Quality Service
+            final fileBytes = await stable.readAsBytes();
+            final localQuality = OnDeviceQualityService.evaluateYPlane(
+              yPlaneBytes: fileBytes,
+              width: 1080,
+              height: 1920,
+              bytesPerRow: 1080,
+            );
+            passed = localQuality.isPassed;
+            guideMsg = localQuality.guidanceText;
+            if (!localQuality.isFingerDetected) {
+              issuesList.add('No finger detected inside oval');
+            }
+            if (localQuality.isBlurry) {
+              issuesList.add('Finger is blurry — tap screen to focus 🔍');
+            }
+            if (localQuality.tooDark) {
+              issuesList.add('Too dark — turn on flash 💡');
+              _setAutoFlash(true);
+            }
+            if (localQuality.tooBright) {
+              issuesList.add('Too bright — avoid direct glare');
+            }
+            if (localQuality.hasGlare) {
+              issuesList.add('Glare detected — tilt finger away from light');
+            }
+          }
+        } catch (_) {
+          passed = true;
+          guideMsg = 'Fingerprint image captured';
+        }
+
+        if (!mounted) return;
+        setState(() {
+          _evaluatingCapture = false;
+          _qualityPassed = passed;
+          _qualityMessage = guideMsg;
+          _qualityIssues = issuesList;
+          _capturing = false;
+        });
+
+        if (passed) {
+          HapticFeedback.heavyImpact();
+          widget.onImageCaptured(stable);
+        } else {
+          HapticFeedback.vibrate();
+        }
       }
     } catch (e) {
       if (mounted) {
         setState(() {
           _error = 'Capture failed: $e';
           _capturing = false;
+          _evaluatingCapture = false;
         });
         if (_autoCapture) _kickPollLoop();
       }
@@ -379,6 +492,10 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       _captured = null;
       _live = false;
       _capturing = false;
+      _evaluatingCapture = false;
+      _qualityPassed = null;
+      _qualityMessage = '';
+      _qualityIssues = [];
       _pollInFlight = false;
       _roiGuidance = '';
       _passCount = 0;
@@ -389,7 +506,9 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       _error = null;
       _tipsVisible = true;
       _guidance =
-          _isSlap ? 'Place your hand in view' : 'Place finger in the oval';
+          _isSlap
+              ? 'Position 4 fingers flat inside guide — tap Capture'
+              : 'Position finger inside oval — tap screen to focus & Capture';
       _guidanceColor = Colors.white60;
     });
     await _startCamera();
@@ -580,22 +699,28 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
           GestureDetector(
             onTap: _switchCamera,
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(8),
                 color: YS.cardAlt,
-                border: Border.all(color: YS.stroke),
+                border: Border.all(color: YS.amber.withValues(alpha: 0.4)),
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.cameraswitch_rounded, size: 12, color: YS.amber),
-                  const SizedBox(width: 3),
+                  Icon(
+                    _lensDirection == CameraLensDirection.front
+                        ? Icons.camera_front_rounded
+                        : Icons.camera_rear_rounded,
+                    size: 13,
+                    color: YS.amber,
+                  ),
+                  const SizedBox(width: 4),
                   Text(
                     _lensDirection == CameraLensDirection.front
                         ? 'FRONT'
                         : 'BACK',
-                    style: YS.label(8, color: YS.inkMid, w: FontWeight.w700),
+                    style: YS.label(9, color: YS.amber, w: FontWeight.w800),
                   ),
                 ],
               ),
@@ -604,33 +729,62 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         if (_live) const SizedBox(width: 4),
         if (_live)
           GestureDetector(
-            onTap: _toggleTorch,
+            onTap:
+                _lensDirection == CameraLensDirection.back
+                    ? _toggleTorch
+                    : () => setState(() => _screenLightOn = !_screenLightOn),
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: _torchOn ? YS.amber : YS.stroke),
-                color: _torchOn ? YS.amberSoft : YS.cardAlt,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color:
+                      (_lensDirection == CameraLensDirection.back
+                              ? _torchOn
+                              : _screenLightOn)
+                          ? YS.amber
+                          : YS.stroke,
+                ),
+                color:
+                    (_lensDirection == CameraLensDirection.back
+                            ? _torchOn
+                            : _screenLightOn)
+                        ? YS.amberSoft
+                        : YS.cardAlt,
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    _torchOn ? Icons.flash_on : Icons.flash_off,
-                    size: 11,
-                    color: _torchOn ? YS.amberDeep : YS.inkLight,
+                    _lensDirection == CameraLensDirection.back
+                        ? (_torchOn
+                            ? Icons.flash_on_rounded
+                            : Icons.flash_off_rounded)
+                        : (_screenLightOn
+                            ? Icons.lightbulb_rounded
+                            : Icons.lightbulb_outline_rounded),
+                    size: 12,
+                    color:
+                        (_lensDirection == CameraLensDirection.back
+                                ? _torchOn
+                                : _screenLightOn)
+                            ? YS.amberDeep
+                            : YS.inkLight,
                   ),
                   const SizedBox(width: 3),
                   Text(
-                    _autoFlashOn
-                        ? 'AUTO'
-                        : _torchOn
-                        ? 'ON'
-                        : 'OFF',
+                    _lensDirection == CameraLensDirection.back
+                        ? (_autoFlashOn ? 'AUTO' : (_torchOn ? 'ON' : 'OFF'))
+                        : (_screenLightOn ? 'LIGHT ON' : 'LIGHT OFF'),
                     style: YS.label(
-                      8,
-                      color: _torchOn ? YS.amberDeep : YS.inkLight,
+                      9,
+                      color:
+                          (_lensDirection == CameraLensDirection.back
+                                  ? _torchOn
+                                  : _screenLightOn)
+                              ? YS.amberDeep
+                              : YS.inkLight,
                       w: FontWeight.w700,
                     ),
                   ),
@@ -658,6 +812,29 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 GestureDetector(
                   onTapDown: (d) => _onTap(d, constraints),
                   child: CameraPreview(_ctrl!),
+                ),
+
+              if (_live &&
+                  _lensDirection == CameraLensDirection.front &&
+                  _screenLightOn)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.9),
+                          width: 8,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.white.withValues(alpha: 0.6),
+                            blurRadius: 20,
+                            spreadRadius: 4,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
 
               if (_captured != null) Image.file(_captured!, fit: BoxFit.cover),
@@ -857,7 +1034,144 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (_roiGuidance.isNotEmpty && _live && _autoCapture)
+                      if (_evaluatingCapture)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black87,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: YS.amber),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: YS.amber,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Text(
+                                'Checking fingerprint quality…',
+                                style: YS.label(
+                                  12,
+                                  color: Colors.white,
+                                  w: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      if (_captured != null &&
+                          !_evaluatingCapture &&
+                          _qualityPassed == false)
+                        Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.85),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: YS.red.withValues(alpha: 0.7),
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.warning_amber_rounded,
+                                    color: YS.red,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      _qualityMessage.isNotEmpty
+                                          ? _qualityMessage
+                                          : 'Fingerprint not clear — retake',
+                                      style: YS.label(
+                                        12,
+                                        color: YS.red,
+                                        w: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              if (_qualityIssues.isNotEmpty) ...[
+                                const SizedBox(height: 6),
+                                ..._qualityIssues.map(
+                                  (i) => Padding(
+                                    padding: const EdgeInsets.only(top: 2),
+                                    child: Row(
+                                      children: [
+                                        const Icon(
+                                          Icons.arrow_right_rounded,
+                                          color: YS.orange,
+                                          size: 14,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Expanded(
+                                          child: Text(
+                                            i,
+                                            style: YS.label(
+                                              11,
+                                              color: Colors.white70,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+
+                      if (_captured != null &&
+                          !_evaluatingCapture &&
+                          _qualityPassed == true)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.85),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: YS.green),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.check_circle_rounded,
+                                color: YS.green,
+                                size: 16,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                '✓ Clear Fingerprint Captured',
+                                style: YS.label(
+                                  12,
+                                  color: YS.green,
+                                  w: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      if (_roiGuidance.isNotEmpty && _live)
                         Container(
                           margin: const EdgeInsets.only(bottom: 6),
                           padding: const EdgeInsets.symmetric(
@@ -934,17 +1248,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                           style: YS.label(
                             11,
                             color: _guidanceColor,
-                            w: FontWeight.w500,
-                          ),
-                        ),
-                      if (_captured != null)
-                        Text(
-                          '✓  Image captured',
-                          textAlign: TextAlign.center,
-                          style: YS.label(
-                            11,
-                            color: YS.amber,
-                            w: FontWeight.w500,
+                            w: FontWeight.w600,
                           ),
                         ),
                     ],
@@ -1089,7 +1393,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             children: [
               Expanded(
                 child: _btn(
-                  'Capture',
+                  _isSlap ? 'Capture Slap' : 'Capture Fingerprint',
                   _captureFresh,
                   true,
                   icon: Icons.camera_rounded,
@@ -1100,74 +1404,55 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             ],
           ),
 
-        if (_live && _autoCapture)
-          Row(
-            children: [
-              Expanded(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  decoration: BoxDecoration(
-                    color: YS.amberSoft,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: YS.amber.withValues(alpha: 0.4)),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: YS.amberDeep,
-                          value:
-                              _passCount > 0
-                                  ? _passCount / _passesNeeded
-                                  : null,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        _passCount > 0
-                            ? 'Hold still… $_passCount/$_passesNeeded'
-                            : 'Scanning quality…',
-                        style: YS.label(
-                          13,
-                          color: YS.amberDeep,
-                          w: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              _btn('✕', _stopCamera, false, square: true),
-            ],
-          ),
-
         if (_captured != null)
-          Row(
-            children: [
-              Expanded(
-                child: _btn(
-                  'Use This Image',
-                  _useImage,
-                  true,
-                  icon: Icons.check_rounded,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _btn(
-                  'Retake',
+          if (_qualityPassed == false)
+            Column(
+              children: [
+                _btn(
+                  'Retake Fingerprint',
                   _retry,
-                  false,
+                  true,
                   icon: Icons.refresh_rounded,
                 ),
-              ),
-            ],
-          ),
+                const SizedBox(height: 6),
+                GestureDetector(
+                  onTap: _useImage,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      'Use anyway (not recommended)',
+                      style: YS.label(
+                        11,
+                        color: YS.inkLight,
+                        w: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            )
+          else
+            Row(
+              children: [
+                Expanded(
+                  child: _btn(
+                    'Use Fingerprint',
+                    _useImage,
+                    true,
+                    icon: Icons.check_rounded,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _btn(
+                    'Retake',
+                    _retry,
+                    false,
+                    icon: Icons.refresh_rounded,
+                  ),
+                ),
+              ],
+            ),
 
         if (_error != null) ...[
           const SizedBox(height: 8),
@@ -1230,6 +1515,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 ),
               )
               : Row(
+                mainAxisSize: MainAxisSize.min,
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   if (icon != null) ...[
@@ -1240,12 +1526,16 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                     ),
                     const SizedBox(width: 6),
                   ],
-                  Text(
-                    label,
-                    style: YS.label(
-                      13,
-                      color: primary ? Colors.black : YS.inkMid,
-                      w: FontWeight.w700,
+                  Flexible(
+                    child: Text(
+                      label,
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
+                      style: YS.label(
+                        13,
+                        color: primary ? Colors.black : YS.inkMid,
+                        w: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ],

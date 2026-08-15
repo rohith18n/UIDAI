@@ -167,9 +167,27 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
         const SizedBox(height: 14),
         if (ok) ...[
           _row('Name', r['name'] ?? '—'),
-          _row('UID',  r['uid']  ?? '—'),
+          _row('UID', r['uid'] ?? '—'),
           if (avgConf != null)
-            _row('Confidence', '${((avgConf as num) * 100).toStringAsFixed(1)}%'),
+            _row(
+              'Confidence',
+              '${((avgConf as num) * 100).toStringAsFixed(1)}%',
+            ),
+          if (r['minutiae_count'] != null)
+            _row('Minutiae Extracted', '${r['minutiae_count']} points'),
+          if (r['execution_time_ms'] != null ||
+              r['total_execution_time_ms'] != null)
+            _row(
+              'Processing Time',
+              '${r['total_execution_time_ms'] ?? r['execution_time_ms']} ms',
+            ),
+          if (r['mode'] != null)
+            _row(
+              'Engine Mode',
+              r['mode'] == 'offline_on_device'
+                  ? 'Offline On-Device'
+                  : 'Cloud Hybrid',
+            ),
           if (matchedFingers != null && matchedFingers.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text('Matched fingers:', style: YS.label(11, color: YS.inkMid)),
@@ -177,11 +195,13 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
             ...matchedFingers.map<Widget>((f) {
               final m = f is Map ? f : <String, dynamic>{};
               return Padding(
-                  padding: const EdgeInsets.only(left: 8, bottom: 2),
-                  child: Text('•  ${(m['finger_position'] ?? '').toString().replaceAll('_', ' ').toUpperCase()}'
-                      '  —  ${(((m['confidence'] ?? 0) as num) * 100).toStringAsFixed(1)}%',
-                      style: YS.label(12, w: FontWeight.w600)),
-                );
+                padding: const EdgeInsets.only(left: 8, bottom: 2),
+                child: Text(
+                  '•  ${(m['finger_position'] ?? '').toString().replaceAll('_', ' ').toUpperCase()}'
+                  '  —  ${(((m['confidence'] ?? 0) as num) * 100).toStringAsFixed(1)}%',
+                  style: YS.label(12, w: FontWeight.w600),
+                ),
+              );
             }),
           ],
         ] else

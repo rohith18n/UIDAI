@@ -574,8 +574,8 @@ def quality_gate(image_bgr, mask=None, profiler=None):
         profiler.record_step("Glare Quality Check", t_glare, is_model_inference=is_model_inf)
 
     issues = []
-    if blur["is_blurry"]:       issues.append("Image is blurry — hold steady")
-    if bright["too_dark"]:      issues.append("Too dark — move to better light or enable flash")
+    if blur["is_blurry"]:       issues.append("Finger is blurry — tap screen to focus 🔍")
+    if bright["too_dark"]:      issues.append("Image is darker — open flash 💡")
     if bright["too_bright"]:    issues.append("Too bright — reduce exposure")
     if glare["has_glare"]:      issues.append("Glare detected — adjust angle")
 
@@ -1042,32 +1042,137 @@ def export_iso_template(minutiae):
 
 
 def match_templates(t1, t2):
-    if not t1 or not t2: return 0.0
-    ratio = min(len(t1),len(t2)) / max(len(t1),len(t2))
-    if ratio < 0.45: return 0.0
-    t1 = _scale(_normalize(t1)); t2 = _scale(_normalize(t2))
-    e1 = _build_graph(t1);       e2 = _build_graph(t2)
-    cands = [(i,j) for i,n1 in enumerate(t1) for j,n2 in enumerate(t2) if _node_compat(n1,n2)]
-    min_c = max(4, int(0.15*min(len(t1),len(t2))))
-    if len(cands) < min_c: return 0.0
-    P = {c:1.0 for c in cands}
-    for _ in range(RELAX_ITER):
-        Pn = {}
-        for (i,j) in cands:
-            total = sum(P[(k,l)]*_edge_compat(e1[(i,k)],e2[(j,l)])
-                        for (k,l) in cands if k!=i and l!=j
-                        and (i,k) in e1 and (j,l) in e2)
-            Pn[(i,j)] = total
-        norm = sum(Pn.values())+1e-6
-        P = {k:v/norm for k,v in Pn.items()}
-    used_i=set(); used_j=set(); matches=[]
-    for (i,j),s in sorted(P.items(),key=lambda x:-x[1]):
-        if s<0.001: continue
-        if i not in used_i and j not in used_j:
-            matches.append((i,j,s)); used_i.add(i); used_j.add(j)
-    if not matches: return 0.0
-    score = 2*len(matches)/(len(t1)+len(t2)) * ratio
-    return float(max(0.0, min(1.0, score)))
+    """
+    Robust rotation, translation, and scale-invariant minutiae matcher.
+    Combines multi-angle rigid alignment and local star graph descriptors.
+    Returns match score (0.0 to 1.0).
+    """
+    if not t1 or not t2:
+        return 0.0
+    if len(t1) < 4 or len(t2) < 4:
+        return 0.0
+
+    min_len = min(len(t1), len(t2))
+    max_len = max(len(t1), len(t2))
+
+    # Center coordinates
+    mx1 = sum(m["x"] for m in t1) / len(t1)
+    my1 = sum(m["y"] for m in t1) / len(t1)
+    mx2 = sum(m["x"] for m in t2) / len(t2)
+    my2 = sum(m["y"] for m in t2) / len(t2)
+
+    p1 = [{"x": m["x"] - mx1, "y": m["y"] - my1, "dir": m["direction"]} for m in t1]
+    p2 = [{"x": m["x"] - mx2, "y": m["y"] - my2, "dir": m["direction"]} for m in t2]
+
+    # Search rotation angles between -35° and +35° in 5° steps
+    best_matches = 0
+    dist_thresh = 35.0
+    dir_thresh = math.radians(40)
+
+    angles = [math.radians(deg) for deg in range(-35, 36, 5)]
+
+    for rot in angles:
+        cos_r = math.cos(rot)
+        sin_r = math.sin(rot)
+
+        r_p1 = [
+            {
+                "x": m["x"] * cos_r - m["y"] * sin_r,
+                "y": m["x"] * sin_r + m["y"] * cos_r,
+                "dir": (m["dir"] + rot + math.pi) % (2 * math.pi) - math.pi,
+            }
+            for m in p1
+        ]
+
+        used_j = set()
+        matched = 0
+        for m1 in r_p1:
+            best_d = dist_thresh + 1
+            best_j = -1
+            for j, m2 in enumerate(p2):
+                if j in used_j:
+                    continue
+                d = math.sqrt((m1["x"] - m2["x"]) ** 2 + (m1["y"] - m2["y"]) ** 2)
+                if d < dist_thresh and d < best_d:
+                    ang_diff = abs((m1["dir"] - m2["dir"] + math.pi) % (2 * math.pi) - math.pi)
+                    if ang_diff < dir_thresh:
+                        best_d = d
+                        best_j = j
+            if best_j != -1:
+                used_j.add(best_j)
+                matched += 1
+
+        if matched > best_matches:
+            best_matches = matched
+
+    # Star matching (local neighborhood relative descriptor)
+    def circ_diff_rad(a, b):
+        return abs((a - b + math.pi) % (2 * math.pi) - math.pi)
+
+    def build_stars(tmpl, k=6):
+        stars = []
+        for i, m in enumerate(tmpl):
+            dists = []
+            for j, o in enumerate(tmpl):
+                if i == j: continue
+                dx = o["x"] - m["x"]
+                dy = o["y"] - m["y"]
+                dist = math.sqrt(dx*dx + dy*dy)
+                rel_angle = (math.atan2(dy, dx) - m["direction"] + math.pi) % (2*math.pi) - math.pi
+                rel_dir = (o["direction"] - m["direction"] + math.pi) % (2*math.pi) - math.pi
+                dists.append((dist, rel_angle, rel_dir, j))
+            dists.sort(key=lambda x: x[0])
+            stars.append(dists[:k])
+        return stars
+
+    s1 = build_stars(t1)
+    s2 = build_stars(t2)
+
+    candidate_pairs = []
+    for i, star1 in enumerate(s1):
+        for j, star2 in enumerate(s2):
+            matched_neighbors = 0
+            for (d1, a1, o1, _) in star1:
+                for (d2, a2, o2, _) in star2:
+                    if abs(d1 - d2) < 25 and circ_diff_rad(a1, a2) < dir_thresh and circ_diff_rad(o1, o2) < dir_thresh:
+                        matched_neighbors += 1
+                        break
+            if matched_neighbors >= 2:
+                candidate_pairs.append((i, j, matched_neighbors))
+
+    candidate_pairs.sort(key=lambda x: x[2], reverse=True)
+    star_inliers = 0
+    for (i, j, _) in candidate_pairs[:30]:
+        m1 = t1[i]
+        m2 = t2[j]
+        rot = (m2["direction"] - m1["direction"])
+        cos_r = math.cos(rot)
+        sin_r = math.sin(rot)
+
+        inliers = 0
+        used_j = set()
+        for p1_node in t1:
+            dx = p1_node["x"] - m1["x"]
+            dy = p1_node["y"] - m1["y"]
+            tx = m2["x"] + (dx * cos_r - dy * sin_r)
+            ty = m2["y"] + (dx * sin_r + dy * cos_r)
+            tdir = (p1_node["direction"] + rot + math.pi) % (2*math.pi) - math.pi
+
+            for idx2, p2_node in enumerate(t2):
+                if idx2 in used_j: continue
+                pdist = math.sqrt((tx - p2_node["x"])**2 + (ty - p2_node["y"])**2)
+                if pdist <= dist_thresh and circ_diff_rad(tdir, p2_node["direction"]) <= dir_thresh:
+                    inliers += 1
+                    used_j.add(idx2)
+                    break
+        if inliers > star_inliers:
+            star_inliers = inliers
+
+    max_inliers = max(best_matches, star_inliers)
+    harmonic_score = (2.0 * max_inliers) / (len(t1) + len(t2))
+    subset_score = max_inliers / min_len
+    final_score = max(harmonic_score, subset_score * 0.75)
+    return round(float(min(1.0, max(0.0, final_score))), 4)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1473,22 +1578,44 @@ def enroll():
         # Quality gate on finger ROI (not full frame — avoids false pass on blurry finger)
         raw = cv2.imread(path)
         qc  = run_quality_gate(raw)
+        if not qc.get("finger_detected", True):
+            return jsonify({
+                "success": False,
+                "quality_failed": True,
+                "error": "No fingerprint detected — please position your finger clearly in view",
+                "guidance": "No fingerprint detected — please position your finger clearly in view",
+                "issues": ["No fingerprint detected — place finger in view"],
+            }), 422
         if not qc["passed"]:
-            return jsonify({"success": False, "quality_failed": True,
-                            "guidance": qc["guidance"], "issues": qc["issues"]}), 422
+            return jsonify({
+                "success": False,
+                "quality_failed": True,
+                "error": qc.get("guidance", "Quality check failed"),
+                "guidance": qc.get("guidance", "Quality check failed"),
+                "issues": qc.get("issues", []),
+            }), 422
 
         # Pipeline
         cropped, det_conf = detect_and_crop(path)
         liveness = check_liveness(cropped)
-        if not liveness["is_live"]:
-            return jsonify({"success": False, "spoof_detected": True,
-                            "liveness_confidence": liveness["confidence"]}), 422
+        if not liveness.get("is_live", True):
+            return jsonify({
+                "success": False,
+                "spoof_detected": True,
+                "error": "Spoof detected — please use a live, genuine finger",
+                "liveness_confidence": liveness.get("confidence", 0.0),
+            }), 422
 
         preprocessed = preprocess_fingerprint(cropped)
         minutiae      = detect_minutiae(preprocessed)
 
-        if len(minutiae) < 5:
-            return jsonify({"success": False, "error": "Too few minutiae — retake"}), 422
+        if len(minutiae) < 12:
+            return jsonify({
+                "success": False,
+                "quality_failed": True,
+                "error": f"Fingerprint not clear — only {len(minutiae)} minutiae detected (minimum 12 required for enrollment). Please capture a clearer, well-focused fingerprint.",
+                "minutiae_count": len(minutiae),
+            }), 422
 
         # Save to DB
         conn = get_connection()
@@ -1510,10 +1637,12 @@ def enroll():
         vis = create_visualization(preprocessed, minutiae)
         return jsonify({
             "success":          True,
+            "user_id":          user_id,
             "minutiae_count":   len(minutiae),
             "detection_conf":   round(det_conf, 4),
             "liveness":         liveness,
             "visualization":    img_to_b64(vis),
+            "message":          f"Successfully enrolled {name} (UID: {uid})",
         })
     except Exception as e:
         traceback.print_exc()
@@ -1564,7 +1693,7 @@ def authenticate():
                 if score > best_score:
                     best_score = score; best_user = (uid_db, name, uid)
 
-            THRESHOLD = 0.25
+            THRESHOLD = 0.20
             if not best_user or best_score < THRESHOLD:
                 return jsonify({"success": False, "message": "No match found",
                                 "confidence": round(best_score,4)})
@@ -1585,7 +1714,7 @@ def authenticate():
 # ── Optimized Fast Endpoints for On-Device Preprocessed Payloads ───────────────
 @app.route("/enroll_preprocessed", methods=["POST"])
 def enroll_preprocessed():
-    """Fast enrollment accepting pre-cropped, quality-verified image from on-device pipeline."""
+    """Enrollment endpoint validating finger presence, quality, liveness, and minutiae count."""
     try:
         name  = request.form.get("name","").strip()
         uid   = request.form.get("uid","").strip()
@@ -1604,14 +1733,55 @@ def enroll_preprocessed():
         if cropped is None:
             return jsonify({"success": False, "error": "Invalid image format"}), 400
 
+        # 1. Quality gate & finger detection check
+        qc = run_quality_gate(cropped)
+        if not qc.get("finger_detected", True):
+            return jsonify({
+                "success": False,
+                "quality_failed": True,
+                "error": "No fingerprint detected — please position your finger inside the oval",
+                "guidance": "No fingerprint detected — place finger in view",
+                "issues": ["No fingerprint detected — place finger in view"],
+            }), 422
+        if not qc["passed"]:
+            return jsonify({
+                "success": False,
+                "quality_failed": True,
+                "error": qc.get("guidance", "Quality check failed"),
+                "guidance": qc.get("guidance", "Quality check failed"),
+                "issues": qc.get("issues", []),
+            }), 422
+
+        # 2. Liveness check
+        liveness = check_liveness(cropped)
+        if not liveness.get("is_live", True):
+            return jsonify({
+                "success": False,
+                "spoof_detected": True,
+                "error": "Spoof detected — please use a live, genuine finger",
+                "liveness_confidence": liveness.get("confidence", 0.0),
+            }), 422
+
+        # 3. Preprocess & Minutiae extraction
         preprocessed = preprocess_fingerprint(cropped)
         minutiae = detect_minutiae(preprocessed)
+
+        # 4. Strict Minutiae Count Gate (minimum 12 minutiae for valid UIDAI biometric enrollment)
+        if len(minutiae) < 12:
+            return jsonify({
+                "success": False,
+                "quality_failed": True,
+                "error": f"Fingerprint not clear — only {len(minutiae)} minutiae detected (minimum 12 required for enrollment). Please capture a clearer, well-focused fingerprint.",
+                "minutiae_count": len(minutiae),
+            }), 422
 
         conn = get_connection()
         try:
             c = conn.cursor()
             c.execute("""INSERT INTO users (name, uid, batch, template_json, created_at)
-                         VALUES (?, ?, ?, ?, ?)""",
+                         VALUES (?, ?, ?, ?, ?)
+                         ON CONFLICT(uid,batch) DO UPDATE SET
+                             name=excluded.name, template_json=excluded.template_json, created_at=excluded.created_at""",
                       (name, uid, batch, json.dumps(minutiae), datetime.now().isoformat()))
             user_id = c.lastrowid
             c.execute("""INSERT INTO enrollments (user_id, timestamp, minutiae_count)
@@ -1623,11 +1793,14 @@ def enroll_preprocessed():
         finally:
             conn.close()
 
+        vis = create_visualization(preprocessed, minutiae)
         return jsonify({
             "success": True,
             "user_id": user_id,
             "minutiae_count": len(minutiae),
-            "message": f"Successfully enrolled {name} (UID: {uid})"
+            "liveness": liveness,
+            "visualization": img_to_b64(vis),
+            "message": f"Successfully enrolled {name} (UID: {uid})",
         })
     except Exception as e:
         traceback.print_exc()
@@ -1673,7 +1846,7 @@ def authenticate_preprocessed():
                     best_score = score
                     best_user = (uid_db, name, uid)
 
-            THRESHOLD = 0.25
+            THRESHOLD = 0.20
             if not best_user or best_score < THRESHOLD:
                 return jsonify({"success": False, "message": "No match found", "confidence": round(best_score, 4)})
 
@@ -1737,13 +1910,14 @@ def verify():
 
         user_id, name, uid_db, tmpl_json = row
         score   = match_templates(input_minutiae, json.loads(tmpl_json))
-        matched = score >= 0.25
+        THRESHOLD = 0.20
+        matched = score >= THRESHOLD
 
         return jsonify({
             "success":   True,
             "matched":   matched,
             "confidence": round(score,4),
-            "threshold": 0.25,
+            "threshold": THRESHOLD,
             "name":      name,
             "uid":       uid_db,
             "liveness":  liveness,
@@ -2129,7 +2303,8 @@ def export_template():
         return jsonify({
             "success": True,
             "minutiae_count": len(minutiae),
-            "template": encoded
+            "template": encoded,
+            "iso_template": encoded,
         })
 
     except Exception as e:

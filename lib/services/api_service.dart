@@ -1,3 +1,4 @@
+import 'dart:developer' as dev;
 import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -58,7 +59,46 @@ class ApiService {
     ),
   );
 
+  static void _setupLogging(Dio dio, String name) {
+    dio.interceptors.add(
+      InterceptorsWrapper(
+        onRequest: (options, handler) {
+          dev.log(
+            '🌐 ${options.method} ${options.baseUrl}${options.path}',
+            name: 'API.$name.REQ',
+          );
+          return handler.next(options);
+        },
+        onResponse: (response, handler) {
+          dev.log(
+            '📥 [${response.statusCode}] ${response.requestOptions.path}\nData: ${response.data}',
+            name: 'API.$name.RES',
+          );
+          return handler.next(response);
+        },
+        onError: (DioException e, handler) {
+          dev.log(
+            '❌ ${e.requestOptions.path}: ${e.message}\nResponse: ${e.response?.data}',
+            name: 'API.$name.ERR',
+            error: e,
+          );
+          return handler.next(e);
+        },
+      ),
+    );
+  }
+
+  static Map<String, dynamic> _logOffline(
+    String endpoint,
+    Map<String, dynamic> res,
+  ) {
+    dev.log('📥 ($endpoint):\n$res', name: 'OFFLINE_SDK.RES');
+    return res;
+  }
+
   static Future<void> init() async {
+    _setupLogging(_single, 'SINGLE');
+    _setupLogging(_slap, 'SLAP');
     final prefs = await SharedPreferences.getInstance();
     final savedSingle = prefs.getString(_singlePrefKey);
     if (savedSingle != null && savedSingle.isNotEmpty) {
@@ -158,16 +198,35 @@ class ApiService {
       final r = await _single.post('/enroll_preprocessed', data: fd);
       final map = _asMap(r.data);
       if (map.isNotEmpty) return map;
+    } on DioException catch (e) {
+      final d = _asMap(e.response?.data, fallback: <String, dynamic>{});
+      if (d.isNotEmpty) return d;
     } catch (_) {}
 
     // Automatic Offline Native SDK Fallback
     final offlineRes = await processOffline(image);
+    final minutiaeCount = offlineRes['minutiae_count'] as int? ?? 0;
+    final bool isQualityOk =
+        (offlineRes['success'] == true ||
+            offlineRes['is_finger_detected'] == true) &&
+        minutiaeCount >= 12;
+    if (!isQualityOk) {
+      return {
+        'success': false,
+        'error':
+            offlineRes['error'] ??
+            'Fingerprint not clear — only $minutiaeCount minutiae detected (minimum 12 required). Please capture a clearer, focused fingerprint.',
+        'quality_failed': true,
+        'minutiae_count': minutiaeCount,
+        'mode': 'offline_on_device',
+      };
+    }
     return {
-      'success': offlineRes['success'] ?? true,
+      'success': true,
       'name': name,
       'uid': uid,
       'batch': batch,
-      'minutiae_count': offlineRes['minutiae_count'] ?? 0,
+      'minutiae_count': minutiaeCount,
       'liveness': {
         'is_live': offlineRes['is_live'] ?? true,
         'score': offlineRes['liveness_score'] ?? 0.94,
@@ -308,7 +367,7 @@ class ApiService {
               : 'No finger detected - place finger inside oval';
       final minutiaeList = raw['minutiae_list'] as List? ?? [];
 
-      return {
+      final res = {
         'success': true,
         'mode': 'offline_on_device',
         'is_finger_detected': isFingerDetected,
@@ -334,11 +393,13 @@ class ApiService {
           'visualization': preprocessedB64,
         },
       };
+      return _logOffline('processOffline', res);
     } catch (e) {
-      return <String, dynamic>{
+      final errRes = <String, dynamic>{
         'success': false,
         'error': 'Offline processing error: $e',
       };
+      return _logOffline('processOffline (error)', errRes);
     }
   }
 

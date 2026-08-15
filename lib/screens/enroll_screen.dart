@@ -60,6 +60,10 @@ class _EnrollScreenState extends State<EnrollScreen> {
         HapticFeedback.heavyImpact();
         _nameCtrl.clear(); _uidCtrl.clear();
         setState(() { _image = null; _region = null; _gesturePassed = false; });
+      } else {
+        HapticFeedback.vibrate();
+        final err = r['error'] ?? r['guidance'] ?? r['message'] ?? 'Enrollment failed';
+        _snack(err.toString());
       }
     } catch (e) {
       final isOffline = e.toString().contains('SocketException') ||
@@ -289,9 +293,26 @@ class _EnrollScreenState extends State<EnrollScreen> {
                 );
             })
           else ...[
-            _row('Minutiae',  '${r['minutiae_count'] ?? 0}'),
-            _row('Liveness',  (r['liveness'] is Map && r['liveness']['is_live'] == true) ? 'Live ✓' : 'Spoof'),
-            _row('Detection', '${(((r['detection_conf'] ?? 0) as num) * 100).toStringAsFixed(1)}%'),
+            _row('Minutiae Extracted', '${r['minutiae_count'] ?? 0} points'),
+            _row(
+              'Liveness',
+              (r['liveness'] is Map && r['liveness']['is_live'] == true)
+                  ? 'Live ✓'
+                  : 'Spoof',
+            ),
+            if (r['total_execution_time_ms'] != null ||
+                r['execution_time_ms'] != null)
+              _row(
+                'Processing Time',
+                '${r['total_execution_time_ms'] ?? r['execution_time_ms']} ms',
+              ),
+            if (r['mode'] != null)
+              _row(
+                'Engine Mode',
+                r['mode'] == 'offline_on_device'
+                    ? 'Offline On-Device'
+                    : 'Cloud Hybrid',
+              ),
           ],
         ],
         if (r['issues'] != null && (r['issues'] is List) && (r['issues'] as List).isNotEmpty) ...[
