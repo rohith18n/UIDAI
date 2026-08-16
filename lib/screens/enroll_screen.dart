@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,6 +21,7 @@ class EnrollScreen extends StatefulWidget {
 class _EnrollScreenState extends State<EnrollScreen> {
   final _nameCtrl = TextEditingController();
   final _uidCtrl = TextEditingController();
+  final _scrollCtrl = ScrollController();
   String? _region;
   File? _image;
   bool _loading = false;
@@ -32,6 +34,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
   void dispose() {
     _nameCtrl.dispose();
     _uidCtrl.dispose();
+    _scrollCtrl.dispose();
     super.dispose();
   }
 
@@ -79,13 +82,6 @@ class _EnrollScreenState extends State<EnrollScreen> {
       });
       if (r['success'] == true || r['enrolled_fingers'] != null) {
         HapticFeedback.heavyImpact();
-        _nameCtrl.clear();
-        _uidCtrl.clear();
-        setState(() {
-          _image = null;
-          _region = null;
-          _gesturePassed = false;
-        });
       } else {
         HapticFeedback.vibrate();
         final err =
@@ -116,6 +112,10 @@ class _EnrollScreenState extends State<EnrollScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final bool isSuccess =
+        _result != null &&
+        (_result!['success'] == true || _result!['enrolled_fingers'] != null);
+
     return Scaffold(
       backgroundColor: YS.bg,
       appBar: AppBar(
@@ -133,6 +133,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
         ),
       ),
       body: SingleChildScrollView(
+        controller: _scrollCtrl,
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -272,29 +273,82 @@ class _EnrollScreenState extends State<EnrollScreen> {
               const SizedBox(height: 4),
               if (_result!['offline'] == true)
                 ysOfflineCard(() => setState(() => _result = null))
-              else
+              else ...[
                 _resultCard(_result!),
+                if (_result!['success'] == true) ...[
+                  const SizedBox(height: 16),
+                  if (!_isSlap && _result!['images'] is Map)
+                    _singlePipelineVisualizer(_result!)
+                  else if (_isSlap && (_result!['fingers'] is List || _result!['composite_b64'] != null))
+                    _slapPipelineVisualizer(_result!),
+                ],
+              ],
               const SizedBox(height: 16),
             ],
-            ElevatedButton(
-              onPressed: _loading ? null : _enroll,
-              child:
-                  _loading
-                      ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          color: Colors.black,
-                          strokeWidth: 2,
-                        ),
-                      )
-                      : Text(_isSlap ? 'Enroll Slap' : 'Enroll User'),
+            ElevatedButton.icon(
+              onPressed: _loading
+                  ? null
+                  : (isSuccess ? _resetForNextUser : _enroll),
+              icon: _loading
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        color: Colors.black,
+                        strokeWidth: 2,
+                      ),
+                    )
+                  : Icon(
+                      isSuccess
+                          ? Icons.person_add_rounded
+                          : (_isSlap
+                              ? Icons.fingerprint_rounded
+                              : Icons.check_circle_outline_rounded),
+                      size: 20,
+                    ),
+              label: Text(
+                _loading
+                    ? 'Processing...'
+                    : (isSuccess
+                        ? 'Enroll Next User'
+                        : (_isSlap ? 'Enroll Slap' : 'Enroll User')),
+                style: YS.label(15, w: FontWeight.w700),
+              ),
+              style: isSuccess
+                  ? ElevatedButton.styleFrom(
+                      backgroundColor: YS.green,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    )
+                  : null,
             ),
             const SizedBox(height: 40),
           ],
         ),
       ),
     );
+  }
+
+  void _resetForNextUser() {
+    _nameCtrl.clear();
+    _uidCtrl.clear();
+    setState(() {
+      _image = null;
+      _result = null;
+      _region = null;
+      _gesturePassed = false;
+      _loading = false;
+    });
+    if (_scrollCtrl.hasClients) {
+      _scrollCtrl.animateTo(
+        0,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeOut,
+      );
+    }
   }
 
   Widget _livenessGate() => Container(
@@ -624,6 +678,300 @@ class _EnrollScreenState extends State<EnrollScreen> {
             ),
           ],
         ],
+      ),
+    );
+  }
+
+  Widget _singlePipelineVisualizer(Map<String, dynamic> r) {
+    final imagesRaw = r['images'];
+    final Map<dynamic, dynamic> images = imagesRaw is Map ? imagesRaw : {};
+    final steps = [
+      {'num': '1', 'title': 'Original Frame', 'desc': 'Raw camera frame capture', 'icon': Icons.camera_alt_outlined, 'key': 'original'},
+      {'num': '2', 'title': 'YOLO Distal Crop', 'desc': 'Distal phalanx apex & ROI boundary', 'icon': Icons.crop_free_rounded, 'key': 'cropped'},
+      {'num': '3', 'title': 'Contact-Equivalent FIR', 'desc': 'U²-Net segmented tissue & enhanced ridges', 'icon': Icons.contrast_rounded, 'key': 'preprocessed'},
+      {'num': '4', 'title': 'Minutiae Extraction', 'desc': 'Ridge endings & bifurcations mapped', 'icon': Icons.scatter_plot_rounded, 'key': 'visualization'},
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'PIPELINE VISUALIZATION',
+          style: YS.label(11, color: YS.inkLight, w: FontWeight.w700).copyWith(letterSpacing: 1.8),
+        ),
+        const SizedBox(height: 10),
+        ...steps.map((s) {
+          final b64 = images[s['key']] as String?;
+          return Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(
+              color: YS.card,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: YS.stroke),
+              boxShadow: YS.cardShadow,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 24,
+                        height: 24,
+                        decoration: BoxDecoration(
+                          color: YS.blueBg,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Center(
+                          child: Text(
+                            s['num'] as String,
+                            style: YS.label(11, color: YS.blue, w: FontWeight.w800),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(s['title'] as String, style: YS.label(13, w: FontWeight.w700)),
+                            Text(s['desc'] as String, style: YS.label(10, color: YS.inkLight)),
+                          ],
+                        ),
+                      ),
+                      Icon(s['icon'] as IconData, color: YS.blue, size: 16),
+                    ],
+                  ),
+                ),
+                if (b64 != null && b64.isNotEmpty)
+                  GestureDetector(
+                    onTap: () => _showImageZoomDialog(s['title'] as String, b64),
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                      child: Stack(
+                        alignment: Alignment.bottomRight,
+                        children: [
+                          Container(
+                            color: Colors.white,
+                            width: double.infinity,
+                            constraints: const BoxConstraints(maxHeight: 220),
+                            child: Image.memory(
+                              base64Decode(b64),
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                          Container(
+                            margin: const EdgeInsets.all(8),
+                            padding: const EdgeInsets.all(5),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Icon(Icons.zoom_in_rounded, color: Colors.white, size: 14),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _slapPipelineVisualizer(Map<String, dynamic> r) {
+    final composite = r['composite_b64'] as String?;
+    final rawF = r['fingers'];
+    final fingers = (rawF is List ? rawF.whereType<Map>().toList() : <Map>[]);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (composite != null && composite.isNotEmpty) ...[
+          Text(
+            'STITCHED SLAP COMPOSITE',
+            style: YS.label(11, color: YS.inkLight, w: FontWeight.w700).copyWith(letterSpacing: 1.8),
+          ),
+          const SizedBox(height: 10),
+          GestureDetector(
+            onTap: () => _showImageZoomDialog('4-Finger Composite', composite),
+            child: Container(
+              height: 150,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: YS.stroke),
+                image: DecorationImage(
+                  fit: BoxFit.contain,
+                  image: MemoryImage(base64Decode(composite)),
+                ),
+              ),
+              alignment: Alignment.bottomRight,
+              padding: const EdgeInsets.all(8),
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Icon(Icons.zoom_in_rounded, color: Colors.white, size: 14),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        if (fingers.isNotEmpty) ...[
+          Text(
+            'PER-FINGER CROPS & MINUTIAE',
+            style: YS.label(11, color: YS.inkLight, w: FontWeight.w700).copyWith(letterSpacing: 1.8),
+          ),
+          const SizedBox(height: 10),
+          ...fingers.map((f) => _fingerCard(f)),
+        ],
+      ],
+    );
+  }
+
+  Widget _fingerCard(Map f) {
+    final pos = (f['finger_position'] ?? f['position'] ?? '').toString().replaceAll('_', ' ');
+    final mins = f['minutiae_count'] ?? (f['minutiae'] as List?)?.length ?? 0;
+    final cropped = f['cropped_b64'];
+    final preproc = f['preprocessed_b64'];
+    final vis = f['visualization_b64'] ?? f['minutiae_b64'];
+    final isoCode = f['iso_code'];
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: YS.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: YS.stroke),
+        boxShadow: YS.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                pos.toUpperCase(),
+                style: YS.label(13, w: FontWeight.w700),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: YS.amberSoft,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '$mins minutiae${isoCode != null ? ' · ISO $isoCode' : ''}',
+                  style: YS.label(10, color: YS.amberDeep, w: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _stageTile('1. Cropped', cropped)),
+              const SizedBox(width: 6),
+              Expanded(child: _stageTile('2. FIR Image', preproc)),
+              const SizedBox(width: 6),
+              Expanded(child: _stageTile('3. Minutiae', vis)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _stageTile(String label, dynamic b64) {
+    final String? strB64 = b64 is String && b64.isNotEmpty ? b64 : null;
+    final hasImg = strB64 != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: YS.label(10, color: YS.inkLight, w: FontWeight.w600)),
+        const SizedBox(height: 4),
+        AspectRatio(
+          aspectRatio: 1.0,
+          child: GestureDetector(
+            onTap: hasImg ? () => _showImageZoomDialog(label, strB64) : null,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: YS.stroke),
+                image: hasImg
+                    ? DecorationImage(
+                        fit: BoxFit.contain,
+                        image: MemoryImage(base64Decode(strB64)),
+                      )
+                    : null,
+              ),
+              child: !hasImg
+                  ? Center(child: Icon(Icons.inbox_rounded, color: YS.inkFaint, size: 18))
+                  : const Align(
+                      alignment: Alignment.topRight,
+                      child: Padding(
+                        padding: EdgeInsets.all(3.0),
+                        child: Icon(Icons.zoom_in_rounded, color: Colors.black45, size: 12),
+                      ),
+                    ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showImageZoomDialog(String title, String b64) {
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black87,
+        insetPadding: const EdgeInsets.all(16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white70),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: InteractiveViewer(
+                minScale: 0.8,
+                maxScale: 6.0,
+                child: ClipRRect(
+                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                  child: Container(
+                    color: Colors.white,
+                    child: Image.memory(
+                      base64Decode(b64),
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

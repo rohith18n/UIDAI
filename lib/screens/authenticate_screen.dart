@@ -219,9 +219,12 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
     final color = ok ? YS.green : YS.red;
     final bg = ok ? YS.greenBg : YS.redBg;
     String msg = ok ? '' : (r['message'] ?? r['error'] ?? 'Not recognized');
-    if (r['quality_failed'] == true)
+    if (r['quality_failed'] == true) {
       msg = r['guidance'] ?? 'Quality check failed';
-    if (r['spoof_detected'] == true) msg = 'Spoof detected';
+    }
+    if (r['spoof_detected'] == true) {
+      msg = 'Spoof detected';
+    }
     final rawMatched = r['matched_fingers'];
     final matchedFingers = rawMatched is List ? rawMatched : null;
     final avgConf = r['avg_confidence'] ?? r['confidence'];

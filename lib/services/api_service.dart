@@ -231,6 +231,10 @@ class ApiService {
           data['uid'] = uid;
           data['batch'] = batch;
           data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+          data['images'] = pipeRes['images'];
+          data['quality'] = pipeRes['quality'];
+          data['minutiae'] = pipeRes['minutiae'];
+          data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
           // Also persist locally for offline continuity
           await LocalBiometricEngine.enrollSingle(
             name: name,
@@ -531,6 +535,9 @@ class ApiService {
             final data = Map<String, dynamic>.from(response.data as Map);
             data['mode'] = 'cloud_hybrid';
             data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+            data['fingers'] = slapRes['fingers'];
+            data['composite_b64'] = slapRes['composite_b64'];
+            data['quality'] = slapRes['quality'];
             // Also persist locally
             await LocalBiometricEngine.enrollSlap(
               name: name,
