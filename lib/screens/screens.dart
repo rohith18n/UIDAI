@@ -365,14 +365,17 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
   Widget _resultCard(Map<String, dynamic> r) {
     final thresh = ((r['threshold'] ?? 0.20) as num).toDouble();
-    final score = ((r['confidence'] ?? r['avg_confidence'] ?? 0.0) as num).toDouble();
-    final ok = r['success'] == true &&
-        (r['matched'] == true || score >= thresh);
+    final score =
+        ((r['confidence'] ?? r['avg_confidence'] ?? 0.0) as num).toDouble();
+    final ok =
+        r['success'] == true &&
+        (r['matched'] == true || (r['confidence'] != null && score >= thresh));
     final color = ok ? YS.green : YS.red;
     final bg = ok ? YS.greenBg : YS.redBg;
-    String msg = ok
-        ? 'Identity Verified'
-        : (r['error'] ?? r['message'] ?? 'Identity mismatch');
+    final String errorText = (r['error'] ?? r['message'] ?? '').toString();
+    final bool hasError = errorText.isNotEmpty && errorText != 'null';
+    String msg =
+        ok ? 'Identity Verified' : (hasError ? errorText : 'Identity Mismatch');
     if (r['quality_failed'] == true) msg = r['guidance'] ?? 'Quality failed';
     if (r['spoof_detected'] == true) msg = 'Spoof detected';
     final raw = r['matched_fingers'];
@@ -403,7 +406,9 @@ class _VerifyScreenState extends State<VerifyScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      ok ? 'IDENTITY VERIFIED' : 'MISMATCH',
+                      ok
+                          ? 'IDENTITY VERIFIED'
+                          : (hasError ? 'ERROR / NOT FOUND' : 'MISMATCH'),
                       style: YS.display(16, color: color, w: FontWeight.w800),
                     ),
                     Text(
@@ -418,6 +423,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
           const SizedBox(height: 14),
           Divider(color: color.withValues(alpha: 0.2)),
           const SizedBox(height: 8),
+          if (hasError && !ok) ...[_row('Error', errorText)],
           if (r['client_total_ms'] != null &&
               r['total_execution_time_ms'] != null &&
               r['client_total_ms'] != r['total_execution_time_ms']) ...[
@@ -436,23 +442,29 @@ class _VerifyScreenState extends State<VerifyScreen> {
               'Complete Process Time',
               '${(((r['client_total_ms'] ?? r['total_execution_time_ms'] ?? r['execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s',
             ),
-          if (ok && r['name'] != null) _row('Name', r['name'].toString()),
-          if (ok && r['uid'] != null) _row('Aadhaar UID', r['uid'].toString()),
-          _row(
-            'Match Score',
-            '${(score * 100).toStringAsFixed(1)}% (Threshold: ${(thresh * 100).toStringAsFixed(0)}%)',
-          ),
-          const SizedBox(height: 6),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: LinearProgressIndicator(
-              value: score.clamp(0.0, 1.0),
-              backgroundColor: YS.stroke,
-              color: color,
-              minHeight: 8,
+          if (r['uid'] != null && r['uid'].toString() != 'null')
+            _row('Aadhaar UID', r['uid'].toString()),
+          if (r['name'] != null &&
+              r['name'].toString() != 'null' &&
+              r['name'].toString() != r['uid'].toString())
+            _row('Name', r['name'].toString()),
+          if (r['confidence'] != null || r['avg_confidence'] != null) ...[
+            _row(
+              'Match Score',
+              '${(score * 100).toStringAsFixed(1)}% (Threshold: ${(thresh * 100).toStringAsFixed(0)}%)',
             ),
-          ),
-          const SizedBox(height: 8),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: score.clamp(0.0, 1.0),
+                backgroundColor: YS.stroke,
+                color: color,
+                minHeight: 8,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
           if (minutiaeCount != null)
             _row('Minutiae Extracted', '$minutiaeCount points'),
           if (r['mode'] != null)
@@ -507,7 +519,8 @@ class _VerifyScreenState extends State<VerifyScreen> {
       hasGlare = qc['has_glare'] == true;
     }
 
-    final isBlurry = (qc['blur'] is Map && qc['blur']['is_blurry'] == true) ||
+    final isBlurry =
+        (qc['blur'] is Map && qc['blur']['is_blurry'] == true) ||
         qc['is_blurry'] == true;
     final guidance = qc['guidance'] ?? qc['guidance_text'];
     final readiness = qc['readiness_score'];
@@ -519,9 +532,10 @@ class _VerifyScreenState extends State<VerifyScreen> {
         color: passed ? YS.greenBg : YS.redBg,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: passed
-              ? YS.green.withValues(alpha: 0.3)
-              : YS.red.withValues(alpha: 0.3),
+          color:
+              passed
+                  ? YS.green.withValues(alpha: 0.3)
+                  : YS.red.withValues(alpha: 0.3),
         ),
       ),
       child: Column(
@@ -547,21 +561,31 @@ class _VerifyScreenState extends State<VerifyScreen> {
               ),
               if (readiness != null)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: passed ? YS.green : YS.red,
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
                     'Score: ${(readiness as num).toStringAsFixed(1)}',
-                    style: YS.label(10, color: Colors.white, w: FontWeight.w700),
+                    style: YS.label(
+                      10,
+                      color: Colors.white,
+                      w: FontWeight.w700,
+                    ),
                   ),
                 ),
             ],
           ),
           if (guidance != null) ...[
             const SizedBox(height: 6),
-            Text('→ $guidance', style: YS.label(12, color: passed ? YS.inkMid : YS.red)),
+            Text(
+              '→ $guidance',
+              style: YS.label(12, color: passed ? YS.inkMid : YS.red),
+            ),
           ],
           const SizedBox(height: 12),
           Row(
@@ -613,7 +637,9 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
   Widget _minutiaeStats(Map<String, dynamic> r) {
     final mins = r['minutiae'] as List? ?? [];
-    final count = (r['input_minutiae_count'] ?? r['minutiae_count'] as num?)?.toInt() ?? mins.length;
+    final count =
+        (r['input_minutiae_count'] ?? r['minutiae_count'] as num?)?.toInt() ??
+        mins.length;
 
     int rig = 0;
     int bif = 0;
@@ -635,14 +661,16 @@ class _VerifyScreenState extends State<VerifyScreen> {
 
     final bool isOptimal = count >= 25;
     final bool isAcceptable = count >= 12;
-    final Color barColor = isOptimal
-        ? YS.green
-        : (isAcceptable ? const Color(0xFF0091EA) : YS.orange);
-    final String statusText = isOptimal
-        ? '✓ Optimal minutiae density ($count features) — UIDAI compliant'
-        : (isAcceptable
-            ? '✓ Sufficient minutiae ($count features) for 1:1 verification'
-            : '⚠ Low minutiae count ($count features) — minimum 12 required');
+    final Color barColor =
+        isOptimal
+            ? YS.green
+            : (isAcceptable ? const Color(0xFF0091EA) : YS.orange);
+    final String statusText =
+        isOptimal
+            ? '✓ Optimal minutiae density ($count features) — UIDAI compliant'
+            : (isAcceptable
+                ? '✓ Sufficient minutiae ($count features) for 1:1 verification'
+                : '⚠ Low minutiae count ($count features) — minimum 12 required');
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -658,7 +686,10 @@ class _VerifyScreenState extends State<VerifyScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('Minutiae Extraction', style: YS.label(14, w: FontWeight.w700)),
+              Text(
+                'Minutiae Extraction',
+                style: YS.label(14, w: FontWeight.w700),
+              ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
@@ -712,7 +743,10 @@ class _VerifyScreenState extends State<VerifyScreen> {
                   ),
                 ),
                 const SizedBox(width: 6),
-                Text('Ending (RIG)', style: YS.label(11, color: YS.inkMid, w: FontWeight.w600)),
+                Text(
+                  'Ending (RIG)',
+                  style: YS.label(11, color: YS.inkMid, w: FontWeight.w600),
+                ),
                 const SizedBox(width: 16),
                 Container(
                   width: 10,
@@ -723,7 +757,10 @@ class _VerifyScreenState extends State<VerifyScreen> {
                   ),
                 ),
                 const SizedBox(width: 6),
-                Text('Bifurcation (BIF)', style: YS.label(11, color: YS.inkMid, w: FontWeight.w600)),
+                Text(
+                  'Bifurcation (BIF)',
+                  style: YS.label(11, color: YS.inkMid, w: FontWeight.w600),
+                ),
               ],
             ),
           ),
@@ -739,7 +776,10 @@ class _VerifyScreenState extends State<VerifyScreen> {
               ),
             ),
             const SizedBox(height: 6),
-            Text(statusText, style: YS.label(11, color: barColor, w: FontWeight.w600)),
+            Text(
+              statusText,
+              style: YS.label(11, color: barColor, w: FontWeight.w600),
+            ),
           ],
         ],
       ),
@@ -767,10 +807,34 @@ class _VerifyScreenState extends State<VerifyScreen> {
     final imagesRaw = r['images'];
     final Map<dynamic, dynamic> images = imagesRaw is Map ? imagesRaw : {};
     final steps = [
-      {'num': '1', 'title': 'Original Frame', 'desc': 'Raw camera frame capture', 'icon': Icons.camera_alt_outlined, 'key': 'original'},
-      {'num': '2', 'title': 'YOLO Distal Crop', 'desc': 'Distal phalanx apex & ROI boundary', 'icon': Icons.crop_free_rounded, 'key': 'cropped'},
-      {'num': '3', 'title': 'Contact-Equivalent FIR', 'desc': 'U²-Net segmented tissue & enhanced ridges', 'icon': Icons.contrast_rounded, 'key': 'preprocessed'},
-      {'num': '4', 'title': 'Minutiae Extraction', 'desc': 'Ridge endings & bifurcations mapped', 'icon': Icons.scatter_plot_rounded, 'key': 'visualization'},
+      {
+        'num': '1',
+        'title': 'Original Frame',
+        'desc': 'Raw camera frame capture',
+        'icon': Icons.camera_alt_outlined,
+        'key': 'original',
+      },
+      {
+        'num': '2',
+        'title': 'YOLO Distal Crop',
+        'desc': 'Distal phalanx apex & ROI boundary',
+        'icon': Icons.crop_free_rounded,
+        'key': 'cropped',
+      },
+      {
+        'num': '3',
+        'title': 'Contact-Equivalent FIR',
+        'desc': 'U²-Net segmented tissue & enhanced ridges',
+        'icon': Icons.contrast_rounded,
+        'key': 'preprocessed',
+      },
+      {
+        'num': '4',
+        'title': 'Minutiae Extraction',
+        'desc': 'Ridge endings & bifurcations mapped',
+        'icon': Icons.scatter_plot_rounded,
+        'key': 'visualization',
+      },
     ];
 
     return Column(
@@ -778,7 +842,9 @@ class _VerifyScreenState extends State<VerifyScreen> {
       children: [
         Text(
           'PIPELINE VISUALIZATION',
-          style: YS.label(11, color: YS.inkLight, w: FontWeight.w700).copyWith(letterSpacing: 1.8),
+          style: YS
+              .label(11, color: YS.inkLight, w: FontWeight.w700)
+              .copyWith(letterSpacing: 1.8),
         ),
         const SizedBox(height: 10),
         ...steps.map((s) {
@@ -808,7 +874,11 @@ class _VerifyScreenState extends State<VerifyScreen> {
                         child: Center(
                           child: Text(
                             s['num'] as String,
-                            style: YS.label(11, color: YS.green, w: FontWeight.w800),
+                            style: YS.label(
+                              11,
+                              color: YS.green,
+                              w: FontWeight.w800,
+                            ),
                           ),
                         ),
                       ),
@@ -817,8 +887,14 @@ class _VerifyScreenState extends State<VerifyScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(s['title'] as String, style: YS.label(13, w: FontWeight.w700)),
-                            Text(s['desc'] as String, style: YS.label(10, color: YS.inkLight)),
+                            Text(
+                              s['title'] as String,
+                              style: YS.label(13, w: FontWeight.w700),
+                            ),
+                            Text(
+                              s['desc'] as String,
+                              style: YS.label(10, color: YS.inkLight),
+                            ),
                           ],
                         ),
                       ),
@@ -828,9 +904,12 @@ class _VerifyScreenState extends State<VerifyScreen> {
                 ),
                 if (b64 != null && b64.isNotEmpty)
                   GestureDetector(
-                    onTap: () => _showImageZoomDialog(s['title'] as String, b64),
+                    onTap:
+                        () => _showImageZoomDialog(s['title'] as String, b64),
                     child: ClipRRect(
-                      borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                      borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(16),
+                      ),
                       child: Stack(
                         alignment: Alignment.bottomRight,
                         children: [
@@ -850,7 +929,11 @@ class _VerifyScreenState extends State<VerifyScreen> {
                               color: Colors.black54,
                               borderRadius: BorderRadius.circular(6),
                             ),
-                            child: const Icon(Icons.zoom_in_rounded, color: Colors.white, size: 14),
+                            child: const Icon(
+                              Icons.zoom_in_rounded,
+                              color: Colors.white,
+                              size: 14,
+                            ),
                           ),
                         ],
                       ),
@@ -875,7 +958,9 @@ class _VerifyScreenState extends State<VerifyScreen> {
         if (composite != null && composite.isNotEmpty) ...[
           Text(
             'STITCHED SLAP COMPOSITE',
-            style: YS.label(11, color: YS.inkLight, w: FontWeight.w700).copyWith(letterSpacing: 1.8),
+            style: YS
+                .label(11, color: YS.inkLight, w: FontWeight.w700)
+                .copyWith(letterSpacing: 1.8),
           ),
           const SizedBox(height: 10),
           GestureDetector(
@@ -899,7 +984,11 @@ class _VerifyScreenState extends State<VerifyScreen> {
                   color: Colors.black54,
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: const Icon(Icons.zoom_in_rounded, color: Colors.white, size: 14),
+                child: const Icon(
+                  Icons.zoom_in_rounded,
+                  color: Colors.white,
+                  size: 14,
+                ),
               ),
             ),
           ),
@@ -908,7 +997,9 @@ class _VerifyScreenState extends State<VerifyScreen> {
         if (fingers.isNotEmpty) ...[
           Text(
             'PER-FINGER CROPS & MINUTIAE',
-            style: YS.label(11, color: YS.inkLight, w: FontWeight.w700).copyWith(letterSpacing: 1.8),
+            style: YS
+                .label(11, color: YS.inkLight, w: FontWeight.w700)
+                .copyWith(letterSpacing: 1.8),
           ),
           const SizedBox(height: 10),
           ...fingers.map((f) => _fingerCard(f)),
@@ -918,7 +1009,9 @@ class _VerifyScreenState extends State<VerifyScreen> {
   }
 
   Widget _fingerCard(Map f) {
-    final pos = (f['finger_position'] ?? f['position'] ?? '').toString().replaceAll('_', ' ');
+    final pos = (f['finger_position'] ?? f['position'] ?? '')
+        .toString()
+        .replaceAll('_', ' ');
     final mins = f['minutiae_count'] ?? (f['minutiae'] as List?)?.length ?? 0;
     final cropped = f['cropped_b64'];
     final preproc = f['preprocessed_b64'];
@@ -940,10 +1033,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                pos.toUpperCase(),
-                style: YS.label(13, w: FontWeight.w700),
-              ),
+              Text(pos.toUpperCase(), style: YS.label(13, w: FontWeight.w700)),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                 decoration: BoxDecoration(
@@ -978,7 +1068,10 @@ class _VerifyScreenState extends State<VerifyScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: YS.label(10, color: YS.inkLight, w: FontWeight.w600)),
+        Text(
+          label,
+          style: YS.label(10, color: YS.inkLight, w: FontWeight.w600),
+        ),
         const SizedBox(height: 4),
         AspectRatio(
           aspectRatio: 1.0,
@@ -989,22 +1082,34 @@ class _VerifyScreenState extends State<VerifyScreen> {
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: YS.stroke),
-                image: hasImg
-                    ? DecorationImage(
-                        fit: BoxFit.contain,
-                        image: MemoryImage(base64Decode(strB64)),
-                      )
-                    : null,
+                image:
+                    hasImg
+                        ? DecorationImage(
+                          fit: BoxFit.contain,
+                          image: MemoryImage(base64Decode(strB64)),
+                        )
+                        : null,
               ),
-              child: !hasImg
-                  ? Center(child: Icon(Icons.inbox_rounded, color: YS.inkFaint, size: 18))
-                  : const Align(
-                      alignment: Alignment.topRight,
-                      child: Padding(
-                        padding: EdgeInsets.all(3.0),
-                        child: Icon(Icons.zoom_in_rounded, color: Colors.black45, size: 12),
+              child:
+                  !hasImg
+                      ? Center(
+                        child: Icon(
+                          Icons.inbox_rounded,
+                          color: YS.inkFaint,
+                          size: 18,
+                        ),
+                      )
+                      : const Align(
+                        alignment: Alignment.topRight,
+                        child: Padding(
+                          padding: EdgeInsets.all(3.0),
+                          child: Icon(
+                            Icons.zoom_in_rounded,
+                            color: Colors.black45,
+                            size: 12,
+                          ),
+                        ),
                       ),
-                    ),
             ),
           ),
         ),
@@ -1015,45 +1120,60 @@ class _VerifyScreenState extends State<VerifyScreen> {
   void _showImageZoomDialog(String title, String b64) {
     showDialog(
       context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.black87,
-        insetPadding: const EdgeInsets.all(16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15)),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white70),
-                    onPressed: () => Navigator.of(ctx).pop(),
-                  ),
-                ],
-              ),
+      builder:
+          (ctx) => Dialog(
+            backgroundColor: Colors.black87,
+            insetPadding: const EdgeInsets.all(16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
             ),
-            Flexible(
-              child: InteractiveViewer(
-                minScale: 0.8,
-                maxScale: 6.0,
-                child: ClipRRect(
-                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
-                  child: Container(
-                    color: Colors.white,
-                    child: Image.memory(
-                      base64Decode(b64),
-                      fit: BoxFit.contain,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: InteractiveViewer(
+                    minScale: 0.8,
+                    maxScale: 6.0,
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(16),
+                      ),
+                      child: Container(
+                        color: Colors.white,
+                        child: Image.memory(
+                          base64Decode(b64),
+                          fit: BoxFit.contain,
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
     );
   }
 

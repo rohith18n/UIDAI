@@ -233,10 +233,13 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
   }
 
   Widget _resultCard(Map<String, dynamic> r) {
+    final thresh = ((r['threshold'] ?? 0.20) as num).toDouble();
     final ok = r['success'] == true;
     final color = ok ? YS.green : YS.red;
     final bg = ok ? YS.greenBg : YS.redBg;
-    String msg = ok ? 'Match Verified' : (r['message'] ?? r['error'] ?? 'No match found');
+    final errorText = (r['error'] ?? r['message'] ?? '').toString();
+    final bool hasError = errorText.isNotEmpty && errorText != 'null' && !ok;
+    String msg = ok ? 'Match Verified' : (hasError ? errorText : 'No match found');
     if (r['quality_failed'] == true) {
       msg = r['guidance'] ?? 'Quality check failed';
     }
@@ -271,7 +274,9 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      ok ? 'AUTHENTICATED' : 'NOT RECOGNIZED',
+                      ok
+                          ? 'AUTHENTICATED'
+                          : (hasError ? 'ERROR / NOT RECOGNIZED' : 'NOT RECOGNIZED'),
                       style: YS.display(16, color: color, w: FontWeight.w800),
                     ),
                     Text(
@@ -309,7 +314,7 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
           if (avgConf != null)
             _row(
               'Match Confidence',
-              '${(((avgConf as num)) * 100).toStringAsFixed(1)}% (Threshold: 60.0%)',
+              '${(((avgConf as num)) * 100).toStringAsFixed(1)}% (Threshold: ${(thresh * 100).toStringAsFixed(0)}%)',
             ),
           if (r['minutiae_count'] != null)
             _row('Minutiae Extracted', '${r['minutiae_count']} points'),

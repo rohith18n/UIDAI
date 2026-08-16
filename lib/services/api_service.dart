@@ -190,7 +190,42 @@ class ApiService {
     }
   }
 
-  // ── Single-finger Enrollment (Cloud /v2/enroll + On-Device Fallback) ──────
+  static Map<String, dynamic> _extractDioError(
+    dynamic e,
+    int elapsedMs,
+    Map<String, dynamic> pipeRes,
+    String tag,
+  ) {
+    if (e is DioException && e.response?.data is Map) {
+      final serverData = Map<String, dynamic>.from(e.response!.data as Map);
+      serverData['mode'] = 'cloud_hybrid';
+      serverData['total_execution_time_ms'] = elapsedMs;
+      if (pipeRes['images'] != null) serverData['images'] = pipeRes['images'];
+      if (pipeRes['quality'] != null) serverData['quality'] = pipeRes['quality'];
+      if (pipeRes['minutiae'] != null) serverData['minutiae'] = pipeRes['minutiae'];
+      if (pipeRes['minutiae_count'] != null) {
+        serverData['minutiae_count'] = serverData['minutiae_count'] ?? pipeRes['minutiae_count'];
+      }
+      if (pipeRes['fingers'] != null) serverData['fingers'] = pipeRes['fingers'];
+      if (pipeRes['composite_b64'] != null) serverData['composite_b64'] = pipeRes['composite_b64'];
+      return _logRes('$tag (cloud-res)', serverData);
+    }
+    final msg = e is DioException ? (e.message ?? '$e') : '$e';
+    return _logRes('$tag (cloud-failed)', {
+      'success': false,
+      'error': msg,
+      'message': msg,
+      'mode': 'cloud_hybrid',
+      'total_execution_time_ms': elapsedMs,
+      if (pipeRes['images'] != null) 'images': pipeRes['images'],
+      if (pipeRes['quality'] != null) 'quality': pipeRes['quality'],
+      if (pipeRes['minutiae'] != null) 'minutiae': pipeRes['minutiae'],
+      if (pipeRes['fingers'] != null) 'fingers': pipeRes['fingers'],
+      if (pipeRes['composite_b64'] != null) 'composite_b64': pipeRes['composite_b64'],
+    });
+  }
+
+  // ── Single-finger Enrollment (Strict Cloud /v2/enroll) ─────────────────────
   static Future<Map<String, dynamic>> enroll({
     required String name,
     required String uid,
@@ -211,54 +246,53 @@ class ApiService {
             ? pipeRes['images']['preprocessed']
             : null) ??
         pipeRes['preprocessed_b64'] as String?;
-    if (isCloudEnabled && preprocB64 != null) {
-      try {
-        final tempFile = await _base64ToTempPng(preprocB64, 'single_preproc');
-        final formData = FormData.fromMap({
-          'image': await MultipartFile.fromFile(tempFile.path, filename: 'fir.png'),
-          'name': name,
-          'uid': uid,
-          'batch': batch,
-          'finger_position': fingerPosition,
-        });
 
-        final response = await _dio.post('$singleUrl/v2/enroll', data: formData);
-        sw.stop();
-        if (response.statusCode == 200 && response.data is Map) {
-          final data = Map<String, dynamic>.from(response.data as Map);
-          data['mode'] = 'cloud_hybrid';
-          data['name'] = name;
-          data['uid'] = uid;
-          data['batch'] = batch;
-          data['total_execution_time_ms'] = sw.elapsedMilliseconds;
-          data['images'] = pipeRes['images'];
-          data['quality'] = pipeRes['quality'];
-          data['minutiae'] = pipeRes['minutiae'];
-          data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
-          // Also persist locally for offline continuity
-          await LocalBiometricEngine.enrollSingle(
-            name: name,
-            uid: uid,
-            batch: batch,
-            imageFile: image,
-          );
-          return _logRes('/v2/enroll (cloud)', data);
-        }
-      } catch (e) {
-        debugPrint('Cloud /v2/enroll failed ($e), falling back to on-device.');
-      }
+    if (preprocB64 == null) {
+      sw.stop();
+      return _logRes('/enroll (no-fir-image)', {
+        'success': false,
+        'error': 'Failed to generate FIR image for cloud enrollment',
+        'mode': 'cloud_hybrid',
+        'total_execution_time_ms': sw.elapsedMilliseconds,
+      });
     }
 
-    // On-Device Local Biometric Engine Fallback
-    final res = await LocalBiometricEngine.enrollSingle(
-      name: name,
-      uid: uid,
-      batch: batch,
-      imageFile: image,
-    );
-    sw.stop();
-    res['total_execution_time_ms'] = sw.elapsedMilliseconds;
-    return _logRes('/enroll (local)', res);
+    try {
+      final tempFile = await _base64ToTempPng(preprocB64, 'single_preproc');
+      final formData = FormData.fromMap({
+        'image': await MultipartFile.fromFile(tempFile.path, filename: 'fir.png'),
+        'name': name,
+        'uid': uid,
+        'batch': batch,
+        'finger_position': fingerPosition,
+      });
+
+      final response = await _dio.post('$singleUrl/v2/enroll', data: formData);
+      sw.stop();
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = Map<String, dynamic>.from(response.data as Map);
+        data['mode'] = 'cloud_hybrid';
+        data['name'] = name;
+        data['uid'] = uid;
+        data['batch'] = batch;
+        data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+        data['images'] = pipeRes['images'];
+        data['quality'] = pipeRes['quality'];
+        data['minutiae'] = pipeRes['minutiae'];
+        data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
+        return _logRes('/v2/enroll (cloud)', data);
+      } else {
+        return _logRes('/v2/enroll (error)', {
+          'success': false,
+          'error': 'Cloud enrollment returned status ${response.statusCode}',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+    } catch (e) {
+      sw.stop();
+      return _extractDioError(e, sw.elapsedMilliseconds, pipeRes, '/v2/enroll');
+    }
   }
 
   static Future<Map<String, dynamic>> enrollPreprocessed({
@@ -269,7 +303,7 @@ class ApiService {
   }) =>
       enroll(name: name, uid: uid, batch: batch, image: image);
 
-  // ── Single-finger 1:N Authentication (Cloud /v2/authenticate + Fallback) ──
+  // ── Single-finger 1:N Authentication (Strict Cloud /v2/authenticate) ──────
   static Future<Map<String, dynamic>> authenticate({
     required String batch,
     required File image,
@@ -286,39 +320,49 @@ class ApiService {
             ? pipeRes['images']['preprocessed']
             : null) ??
         pipeRes['preprocessed_b64'] as String?;
-    if (isCloudEnabled && preprocB64 != null) {
-      try {
-        final tempFile = await _base64ToTempPng(preprocB64, 'single_auth');
-        final formData = FormData.fromMap({
-          'image': await MultipartFile.fromFile(tempFile.path, filename: 'fir.png'),
-          'batch': batch,
-        });
 
-        final response = await _dio.post('$singleUrl/v2/authenticate', data: formData);
-        sw.stop();
-        if (response.statusCode == 200 && response.data is Map) {
-          final data = Map<String, dynamic>.from(response.data as Map);
-          data['mode'] = 'cloud_hybrid';
-          data['total_execution_time_ms'] = sw.elapsedMilliseconds;
-          data['images'] = pipeRes['images'];
-          data['quality'] = pipeRes['quality'];
-          data['minutiae'] = pipeRes['minutiae'];
-          data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
-          return _logRes('/v2/authenticate (cloud)', data);
-        }
-      } catch (e) {
-        debugPrint('Cloud /v2/authenticate failed ($e), falling back to on-device.');
-      }
+    if (preprocB64 == null) {
+      sw.stop();
+      return _logRes('/authenticate (no-fir-image)', {
+        'success': false,
+        'error': 'Failed to generate FIR image for cloud authentication',
+        'message': 'No FIR image generated',
+        'mode': 'cloud_hybrid',
+        'total_execution_time_ms': sw.elapsedMilliseconds,
+      });
     }
 
-    // On-Device Local Biometric Engine Fallback
-    final res = await LocalBiometricEngine.authenticate(
-      batch: batch,
-      imageFile: image,
-    );
-    sw.stop();
-    res['total_execution_time_ms'] = sw.elapsedMilliseconds;
-    return _logRes('/authenticate (local)', res);
+    try {
+      final tempFile = await _base64ToTempPng(preprocB64, 'single_auth');
+      final formData = FormData.fromMap({
+        'image': await MultipartFile.fromFile(tempFile.path, filename: 'fir.png'),
+        'batch': batch,
+      });
+
+      final response = await _dio.post('$singleUrl/v2/authenticate', data: formData);
+      sw.stop();
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = Map<String, dynamic>.from(response.data as Map);
+        data['mode'] = 'cloud_hybrid';
+        data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+        data['images'] = pipeRes['images'];
+        data['quality'] = pipeRes['quality'];
+        data['minutiae'] = pipeRes['minutiae'];
+        data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
+        return _logRes('/v2/authenticate (cloud)', data);
+      } else {
+        return _logRes('/v2/authenticate (error)', {
+          'success': false,
+          'message': 'Cloud authentication error (HTTP ${response.statusCode})',
+          'error': 'Cloud returned status ${response.statusCode}',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+    } catch (e) {
+      sw.stop();
+      return _extractDioError(e, sw.elapsedMilliseconds, pipeRes, '/v2/authenticate');
+    }
   }
 
   static Future<Map<String, dynamic>> authenticatePreprocessed({
@@ -327,7 +371,7 @@ class ApiService {
   }) =>
       authenticate(batch: batch, image: image);
 
-  // ── Single-finger 1:1 Verification (Cloud /v2/verify + Fallback) ─────────
+  // ── Single-finger 1:1 Verification (Strict Cloud /v2/verify) ─────────────
   static Future<Map<String, dynamic>> verify({
     required String uid,
     required String batch,
@@ -345,41 +389,50 @@ class ApiService {
             ? pipeRes['images']['preprocessed']
             : null) ??
         pipeRes['preprocessed_b64'] as String?;
-    if (isCloudEnabled && preprocB64 != null) {
-      try {
-        final tempFile = await _base64ToTempPng(preprocB64, 'single_verify');
-        final formData = FormData.fromMap({
-          'image': await MultipartFile.fromFile(tempFile.path, filename: 'fir.png'),
-          'uid': uid,
-          'batch': batch,
-        });
 
-        final response = await _dio.post('$singleUrl/v2/verify', data: formData);
-        sw.stop();
-        if (response.statusCode == 200 && response.data is Map) {
-          final data = Map<String, dynamic>.from(response.data as Map);
-          data['mode'] = 'cloud_hybrid';
-          data['total_execution_time_ms'] = sw.elapsedMilliseconds;
-          data['images'] = pipeRes['images'];
-          data['quality'] = pipeRes['quality'];
-          data['minutiae'] = pipeRes['minutiae'];
-          data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
-          return _logRes('/v2/verify (cloud)', data);
-        }
-      } catch (e) {
-        debugPrint('Cloud /v2/verify failed ($e), falling back to on-device.');
-      }
+    if (preprocB64 == null) {
+      sw.stop();
+      return _logRes('/verify (no-fir-image)', {
+        'success': false,
+        'error': 'Failed to generate FIR image for cloud verification',
+        'message': 'No FIR image generated',
+        'mode': 'cloud_hybrid',
+        'total_execution_time_ms': sw.elapsedMilliseconds,
+      });
     }
 
-    // On-Device Local Biometric Engine Fallback
-    final res = await LocalBiometricEngine.verify(
-      uid: uid,
-      batch: batch,
-      imageFile: image,
-    );
-    sw.stop();
-    res['total_execution_time_ms'] = sw.elapsedMilliseconds;
-    return _logRes('/verify (local)', res);
+    try {
+      final tempFile = await _base64ToTempPng(preprocB64, 'single_verify');
+      final formData = FormData.fromMap({
+        'image': await MultipartFile.fromFile(tempFile.path, filename: 'fir.png'),
+        'uid': uid,
+        'batch': batch,
+      });
+
+      final response = await _dio.post('$singleUrl/v2/verify', data: formData);
+      sw.stop();
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = Map<String, dynamic>.from(response.data as Map);
+        data['mode'] = 'cloud_hybrid';
+        data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+        data['images'] = pipeRes['images'];
+        data['quality'] = pipeRes['quality'];
+        data['minutiae'] = pipeRes['minutiae'];
+        data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
+        return _logRes('/v2/verify (cloud)', data);
+      } else {
+        return _logRes('/v2/verify (error)', {
+          'success': false,
+          'message': 'Cloud verification error (HTTP ${response.statusCode})',
+          'error': 'Cloud returned status ${response.statusCode}',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+    } catch (e) {
+      sw.stop();
+      return _extractDioError(e, sw.elapsedMilliseconds, pipeRes, '/v2/verify');
+    }
   }
 
   static Future<Map<String, dynamic>> process(File image) async {
@@ -497,7 +550,7 @@ class ApiService {
     return _logRes('/process_slap', res);
   }
 
-  // ── Slap Multi-Finger Enrollment (Cloud /v2/enroll_slap + Fallback) ───────
+  // ── Slap Multi-Finger Enrollment (Strict Cloud /v2/enroll_slap) ───────────
   static Future<Map<String, dynamic>> enrollSlap({
     required File image,
     required String name,
@@ -515,65 +568,69 @@ class ApiService {
     }
 
     final fingers = (slapRes['fingers'] as List? ?? []).whereType<Map>().toList();
-    if (isCloudEnabled && fingers.isNotEmpty) {
-      try {
-        final List<MultipartFile> imageFiles = [];
-        for (int i = 0; i < fingers.length; i++) {
-          final b64 = fingers[i]['preprocessed_b64'] as String?;
-          if (b64 != null) {
-            final f = await _base64ToTempPng(b64, 'slap_enroll_$i');
-            imageFiles.add(await MultipartFile.fromFile(f.path, filename: 'finger_$i.png'));
-          }
-        }
-
-        if (imageFiles.isNotEmpty) {
-          final formData = FormData.fromMap({
-            'image': imageFiles,
-            'uid': uid,
-            'name': name,
-            'batch': batch,
-            'hand_side': handSide,
-          });
-
-          final response = await _dio.post('$slapUrl/v2/enroll_slap', data: formData);
-          sw.stop();
-          if (response.statusCode == 200 && response.data is Map) {
-            final data = Map<String, dynamic>.from(response.data as Map);
-            data['mode'] = 'cloud_hybrid';
-            data['total_execution_time_ms'] = sw.elapsedMilliseconds;
-            data['fingers'] = slapRes['fingers'];
-            data['composite_b64'] = slapRes['composite_b64'];
-            data['quality'] = slapRes['quality'];
-            // Also persist locally
-            await LocalBiometricEngine.enrollSlap(
-              name: name,
-              uid: uid,
-              batch: batch,
-              imageFile: image,
-              hand: handSide,
-            );
-            return _logRes('/v2/enroll_slap (cloud)', data);
-          }
-        }
-      } catch (e) {
-        debugPrint('Cloud /v2/enroll_slap failed ($e), falling back to on-device.');
-      }
+    if (fingers.isEmpty) {
+      sw.stop();
+      return _logRes('/enroll_slap (no-fingers)', {
+        'success': false,
+        'error': 'No fingers segmented from slap image',
+        'mode': 'cloud_hybrid',
+        'total_execution_time_ms': sw.elapsedMilliseconds,
+      });
     }
 
-    // On-Device Local Biometric Engine Fallback
-    final res = await LocalBiometricEngine.enrollSlap(
-      name: name,
-      uid: uid,
-      batch: batch,
-      imageFile: image,
-      hand: handSide,
-    );
-    sw.stop();
-    res['total_execution_time_ms'] = sw.elapsedMilliseconds;
-    return _logRes('/enroll_slap (local)', res);
+    try {
+      final List<MultipartFile> imageFiles = [];
+      for (int i = 0; i < fingers.length; i++) {
+        final b64 = fingers[i]['preprocessed_b64'] as String?;
+        if (b64 != null) {
+          final f = await _base64ToTempPng(b64, 'slap_enroll_$i');
+          imageFiles.add(await MultipartFile.fromFile(f.path, filename: 'finger_$i.png'));
+        }
+      }
+
+      if (imageFiles.isEmpty) {
+        sw.stop();
+        return _logRes('/enroll_slap (no-valid-firs)', {
+          'success': false,
+          'error': 'Failed to convert segmented finger images to FIR files',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+
+      final formData = FormData.fromMap({
+        'image': imageFiles,
+        'uid': uid,
+        'name': name,
+        'batch': batch,
+        'hand_side': handSide,
+      });
+
+      final response = await _dio.post('$slapUrl/v2/enroll_slap', data: formData);
+      sw.stop();
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = Map<String, dynamic>.from(response.data as Map);
+        data['mode'] = 'cloud_hybrid';
+        data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+        data['fingers'] = slapRes['fingers'];
+        data['composite_b64'] = slapRes['composite_b64'];
+        data['quality'] = slapRes['quality'];
+        return _logRes('/v2/enroll_slap (cloud)', data);
+      } else {
+        return _logRes('/v2/enroll_slap (error)', {
+          'success': false,
+          'error': 'Cloud slap enrollment returned status ${response.statusCode}',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+    } catch (e) {
+      sw.stop();
+      return _extractDioError(e, sw.elapsedMilliseconds, slapRes, '/v2/enroll_slap');
+    }
   }
 
-  // ── Slap Multi-Finger 1:N Authentication (Cloud /v2/authenticate_slap) ───
+  // ── Slap Multi-Finger 1:N Authentication (Strict Cloud /v2/authenticate_slap) ───
   static Future<Map<String, dynamic>> authenticateSlap({
     required String batch,
     required File image,
@@ -588,53 +645,70 @@ class ApiService {
     }
 
     final fingers = (slapRes['fingers'] as List? ?? []).whereType<Map>().toList();
-    if (isCloudEnabled && fingers.isNotEmpty) {
-      try {
-        final List<MultipartFile> imageFiles = [];
-        for (int i = 0; i < fingers.length; i++) {
-          final b64 = fingers[i]['preprocessed_b64'] as String?;
-          if (b64 != null) {
-            final f = await _base64ToTempPng(b64, 'slap_auth_$i');
-            imageFiles.add(await MultipartFile.fromFile(f.path, filename: 'finger_$i.png'));
-          }
-        }
-
-        if (imageFiles.isNotEmpty) {
-          final formData = FormData.fromMap({
-            'image': imageFiles,
-            'batch': batch,
-            'hand_side': handSide,
-          });
-
-          final response = await _dio.post('$slapUrl/v2/authenticate_slap', data: formData);
-          sw.stop();
-          if (response.statusCode == 200 && response.data is Map) {
-            final data = Map<String, dynamic>.from(response.data as Map);
-            data['mode'] = 'cloud_hybrid';
-            data['total_execution_time_ms'] = sw.elapsedMilliseconds;
-            data['fingers'] = slapRes['fingers'];
-            data['composite_b64'] = slapRes['composite_b64'];
-            data['quality'] = slapRes['quality'];
-            return _logRes('/v2/authenticate_slap (cloud)', data);
-          }
-        }
-      } catch (e) {
-        debugPrint('Cloud /v2/authenticate_slap failed ($e), falling back to on-device.');
-      }
+    if (fingers.isEmpty) {
+      sw.stop();
+      return _logRes('/authenticate_slap (no-fingers)', {
+        'success': false,
+        'message': 'No fingers segmented from slap image',
+        'error': 'No fingers found',
+        'mode': 'cloud_hybrid',
+        'total_execution_time_ms': sw.elapsedMilliseconds,
+      });
     }
 
-    // On-Device Local Biometric Engine Fallback
-    final res = await LocalBiometricEngine.authenticateSlap(
-      batch: batch,
-      imageFile: image,
-      hand: handSide,
-    );
-    sw.stop();
-    res['total_execution_time_ms'] = sw.elapsedMilliseconds;
-    return _logRes('/authenticate_slap (local)', res);
+    try {
+      final List<MultipartFile> imageFiles = [];
+      for (int i = 0; i < fingers.length; i++) {
+        final b64 = fingers[i]['preprocessed_b64'] as String?;
+        if (b64 != null) {
+          final f = await _base64ToTempPng(b64, 'slap_auth_$i');
+          imageFiles.add(await MultipartFile.fromFile(f.path, filename: 'finger_$i.png'));
+        }
+      }
+
+      if (imageFiles.isEmpty) {
+        sw.stop();
+        return _logRes('/authenticate_slap (no-valid-firs)', {
+          'success': false,
+          'message': 'Failed to convert segmented finger images to FIR files',
+          'error': 'No valid FIR files',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+
+      final formData = FormData.fromMap({
+        'image': imageFiles,
+        'batch': batch,
+        'hand_side': handSide,
+      });
+
+      final response = await _dio.post('$slapUrl/v2/authenticate_slap', data: formData);
+      sw.stop();
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = Map<String, dynamic>.from(response.data as Map);
+        data['mode'] = 'cloud_hybrid';
+        data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+        data['fingers'] = slapRes['fingers'];
+        data['composite_b64'] = slapRes['composite_b64'];
+        data['quality'] = slapRes['quality'];
+        return _logRes('/v2/authenticate_slap (cloud)', data);
+      } else {
+        return _logRes('/v2/authenticate_slap (error)', {
+          'success': false,
+          'message': 'Cloud slap authentication returned status ${response.statusCode}',
+          'error': 'HTTP ${response.statusCode}',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+    } catch (e) {
+      sw.stop();
+      return _extractDioError(e, sw.elapsedMilliseconds, slapRes, '/v2/authenticate_slap');
+    }
   }
 
-  // ── Slap Multi-Finger 1:1 Verification (Cloud /v2/verify_slap) ───────────
+  // ── Slap Multi-Finger 1:1 Verification (Strict Cloud /v2/verify_slap) ───────────
   static Future<Map<String, dynamic>> verifySlap({
     required String uid,
     required String batch,
@@ -650,52 +724,68 @@ class ApiService {
     }
 
     final fingers = (slapRes['fingers'] as List? ?? []).whereType<Map>().toList();
-    if (isCloudEnabled && fingers.isNotEmpty) {
-      try {
-        final List<MultipartFile> imageFiles = [];
-        for (int i = 0; i < fingers.length; i++) {
-          final b64 = fingers[i]['preprocessed_b64'] as String?;
-          if (b64 != null) {
-            final f = await _base64ToTempPng(b64, 'slap_verify_$i');
-            imageFiles.add(await MultipartFile.fromFile(f.path, filename: 'finger_$i.png'));
-          }
-        }
-
-        if (imageFiles.isNotEmpty) {
-          final formData = FormData.fromMap({
-            'image': imageFiles,
-            'uid': uid,
-            'batch': batch,
-            'hand_side': handSide,
-          });
-
-          final response = await _dio.post('$slapUrl/v2/verify_slap', data: formData);
-          sw.stop();
-          if (response.statusCode == 200 && response.data is Map) {
-            final data = Map<String, dynamic>.from(response.data as Map);
-            data['mode'] = 'cloud_hybrid';
-            data['total_execution_time_ms'] = sw.elapsedMilliseconds;
-            data['fingers'] = slapRes['fingers'];
-            data['composite_b64'] = slapRes['composite_b64'];
-            data['quality'] = slapRes['quality'];
-            return _logRes('/v2/verify_slap (cloud)', data);
-          }
-        }
-      } catch (e) {
-        debugPrint('Cloud /v2/verify_slap failed ($e), falling back to on-device.');
-      }
+    if (fingers.isEmpty) {
+      sw.stop();
+      return _logRes('/verify_slap (no-fingers)', {
+        'success': false,
+        'message': 'No fingers segmented from slap image',
+        'error': 'No fingers found',
+        'mode': 'cloud_hybrid',
+        'total_execution_time_ms': sw.elapsedMilliseconds,
+      });
     }
 
-    // On-Device Local Biometric Engine Fallback
-    final res = await LocalBiometricEngine.verifySlap(
-      uid: uid,
-      batch: batch,
-      imageFile: image,
-      hand: handSide,
-    );
-    sw.stop();
-    res['total_execution_time_ms'] = sw.elapsedMilliseconds;
-    return _logRes('/verify_slap (local)', res);
+    try {
+      final List<MultipartFile> imageFiles = [];
+      for (int i = 0; i < fingers.length; i++) {
+        final b64 = fingers[i]['preprocessed_b64'] as String?;
+        if (b64 != null) {
+          final f = await _base64ToTempPng(b64, 'slap_verify_$i');
+          imageFiles.add(await MultipartFile.fromFile(f.path, filename: 'finger_$i.png'));
+        }
+      }
+
+      if (imageFiles.isEmpty) {
+        sw.stop();
+        return _logRes('/verify_slap (no-valid-firs)', {
+          'success': false,
+          'message': 'Failed to convert segmented finger images to FIR files',
+          'error': 'No valid FIR files',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+
+      final formData = FormData.fromMap({
+        'image': imageFiles,
+        'uid': uid,
+        'batch': batch,
+        'hand_side': handSide,
+      });
+
+      final response = await _dio.post('$slapUrl/v2/verify_slap', data: formData);
+      sw.stop();
+      if (response.statusCode == 200 && response.data is Map) {
+        final data = Map<String, dynamic>.from(response.data as Map);
+        data['mode'] = 'cloud_hybrid';
+        data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+        data['fingers'] = slapRes['fingers'];
+        data['composite_b64'] = slapRes['composite_b64'];
+        data['quality'] = slapRes['quality'];
+        return _logRes('/v2/verify_slap (cloud)', data);
+      } else {
+        return _logRes('/v2/verify_slap (error)', {
+          'success': false,
+          'message': 'Cloud slap verification returned status ${response.statusCode}',
+          'error': 'HTTP ${response.statusCode}',
+          'mode': 'cloud_hybrid',
+          'total_execution_time_ms': sw.elapsedMilliseconds,
+        });
+      }
+    } catch (e) {
+      sw.stop();
+      return _extractDioError(e, sw.elapsedMilliseconds, slapRes, '/v2/verify_slap');
+    }
   }
 
   static Future<List<dynamic>> getSlapHistory({String batch = ''}) async {
