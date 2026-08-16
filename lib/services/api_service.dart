@@ -300,7 +300,10 @@ class ApiService {
           final data = Map<String, dynamic>.from(response.data as Map);
           data['mode'] = 'cloud_hybrid';
           data['total_execution_time_ms'] = sw.elapsedMilliseconds;
-          data['minutiae_count'] = pipeRes['minutiae_count'];
+          data['images'] = pipeRes['images'];
+          data['quality'] = pipeRes['quality'];
+          data['minutiae'] = pipeRes['minutiae'];
+          data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
           return _logRes('/v2/authenticate (cloud)', data);
         }
       } catch (e) {
@@ -357,7 +360,10 @@ class ApiService {
           final data = Map<String, dynamic>.from(response.data as Map);
           data['mode'] = 'cloud_hybrid';
           data['total_execution_time_ms'] = sw.elapsedMilliseconds;
-          data['minutiae_count'] = pipeRes['minutiae_count'];
+          data['images'] = pipeRes['images'];
+          data['quality'] = pipeRes['quality'];
+          data['minutiae'] = pipeRes['minutiae'];
+          data['minutiae_count'] = data['minutiae_count'] ?? pipeRes['minutiae_count'];
           return _logRes('/v2/verify (cloud)', data);
         }
       } catch (e) {
@@ -606,6 +612,9 @@ class ApiService {
             final data = Map<String, dynamic>.from(response.data as Map);
             data['mode'] = 'cloud_hybrid';
             data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+            data['fingers'] = slapRes['fingers'];
+            data['composite_b64'] = slapRes['composite_b64'];
+            data['quality'] = slapRes['quality'];
             return _logRes('/v2/authenticate_slap (cloud)', data);
           }
         }
@@ -666,6 +675,9 @@ class ApiService {
             final data = Map<String, dynamic>.from(response.data as Map);
             data['mode'] = 'cloud_hybrid';
             data['total_execution_time_ms'] = sw.elapsedMilliseconds;
+            data['fingers'] = slapRes['fingers'];
+            data['composite_b64'] = slapRes['composite_b64'];
+            data['quality'] = slapRes['quality'];
             return _logRes('/v2/verify_slap (cloud)', data);
           }
         }

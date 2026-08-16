@@ -563,9 +563,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
             _row(
               'Engine Mode',
               r['mode'] == 'cloud_hybrid'
-                  ? (_isSlap
-                      ? '☁️ Cloud Hybrid (/v2/enroll_slap)'
-                      : '☁️ Cloud Hybrid (/v2/enroll)')
+                  ? '☁️ Cloud Hybrid'
                   : '⚡ Offline On-Device',
             ),
             const SizedBox(height: 10),
