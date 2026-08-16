@@ -201,6 +201,8 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       try {
         await _ctrl!.setFocusMode(FocusMode.auto);
         await _ctrl!.setExposureMode(ExposureMode.auto);
+        await _ctrl!.setFocusPoint(const Offset(0.5, 0.5));
+        await _ctrl!.setExposurePoint(const Offset(0.5, 0.5));
       } catch (_) {}
       try {
         _minZoom = await _ctrl!.getMinZoomLevel();
@@ -865,9 +867,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: _torchOn ? YS.amber : YS.stroke,
-                ),
+                border: Border.all(color: _torchOn ? YS.amber : YS.stroke),
                 color: _torchOn ? YS.amberSoft : YS.cardAlt,
               ),
               child: Row(
@@ -880,7 +880,9 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                   ),
                   const SizedBox(width: 3),
                   Text(
-                    _autoFlashOn ? 'AUTO' : (_torchOn ? 'FLASH ON' : 'FLASH OFF'),
+                    _autoFlashOn
+                        ? 'AUTO'
+                        : (_torchOn ? 'FLASH ON' : 'FLASH OFF'),
                     style: YS.label(
                       9,
                       color: _torchOn ? YS.amberDeep : YS.inkLight,
@@ -966,8 +968,13 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 CustomPaint(
                   painter:
                       widget.overlayStyle == 'slap'
-                          ? _SlapOverlayPainter(YS.amber, widget.handSide)
-                          : _OverlayPainter(YS.amber),
+                          ? _SlapOverlayPainter(
+                            _liveQualityPassed == true ? YS.green : YS.amber,
+                            widget.handSide,
+                          )
+                          : _OverlayPainter(
+                            _liveQualityPassed == true ? YS.green : YS.amber,
+                          ),
                 ),
 
               if (_live && _autoCapture && widget.overlayStyle != 'none')
