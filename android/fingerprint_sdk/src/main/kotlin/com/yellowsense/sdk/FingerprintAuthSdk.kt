@@ -441,82 +441,89 @@ class FingerprintAuthSdk(private val context: Context) {
             )
         }
 
-        // 1. Centroid normalization
-        val mx1 = minutiae1.sumOf { it.x } / minutiae1.size.toDouble()
-        val my1 = minutiae1.sumOf { it.y } / minutiae1.size.toDouble()
-        val mx2 = minutiae2.sumOf { it.x } / minutiae2.size.toDouble()
-        val my2 = minutiae2.sumOf { it.y } / minutiae2.size.toDouble()
+        val distThreshSq = 14.0 * 14.0
+        val dirThresh = Math.toRadians(22.0)
+        var maxCoherentMatches = 0
 
-        data class CenteredM(val x: Double, val y: Double, val dir: Double, val type: String)
+        val maxProbe = min(minutiae1.size, 25)
+        val maxEnroll = min(minutiae2.size, 25)
 
-        val p1 = minutiae1.map { CenteredM(it.x - mx1, it.y - my1, it.direction, it.type) }
-        val p2 = minutiae2.map { CenteredM(it.x - mx2, it.y - my2, it.direction, it.type) }
+        for (i in 0 until maxProbe) {
+            val qi = minutiae1[i]
+            for (j in 0 until maxEnroll) {
+                val ej = minutiae2[j]
 
-        var bestMatches = 0
-        val distThresh = 35.0
-        val distThreshSq = distThresh * distThresh
-        val dirThresh = Math.toRadians(40.0)
+                var dTheta = ((ej.direction - qi.direction + Math.PI) % (2 * Math.PI)) - Math.PI
+                if (abs(dTheta) > Math.toRadians(35.0)) continue
 
-        // Search rotation angles between -35° and +35° in 5° steps (same as backend)
-        for (deg in -35..35 step 5) {
-            val rot = Math.toRadians(deg.toDouble())
-            val cosR = cos(rot)
-            val sinR = sin(rot)
+                val cosR = cos(dTheta)
+                val sinR = sin(dTheta)
 
-            val rotatedP1 = p1.map {
-                CenteredM(
-                    x = it.x * cosR - it.y * sinR,
-                    y = it.x * sinR + it.y * cosR,
-                    dir = (it.dir + rot + Math.PI) % (2 * Math.PI) - Math.PI,
-                    type = it.type
-                )
-            }
+                val qRotX = qi.x * cosR - qi.y * sinR
+                val qRotY = qi.x * sinR + qi.y * cosR
+                val tx = ej.x - qRotX
+                val ty = ej.y - qRotY
 
-            val usedJ = mutableSetOf<Int>()
-            var matched = 0
+                val matchedEnrolled = mutableSetOf(j)
+                var currentMatches = 1
 
-            for (m1 in rotatedP1) {
-                var bestD = distThreshSq + 1.0
-                var bestJ = -1
+                for (k in minutiae1.indices) {
+                    if (k == i) continue
+                    val qk = minutiae1[k]
 
-                for (j in p2.indices) {
-                    if (j in usedJ) continue
-                    val m2 = p2[j]
-                    val dx = m1.x - m2.x
-                    val dy = m1.y - m2.y
-                    val dSq = dx * dx + dy * dy
+                    val transformedX = (qk.x * cosR - qk.y * sinR) + tx
+                    val transformedY = (qk.x * sinR + qk.y * cosR) + ty
+                    val transformedDir = ((qk.direction + dTheta + Math.PI) % (2 * Math.PI)) - Math.PI
 
-                    if (dSq <= distThreshSq && dSq < bestD) {
-                        var angDiff = abs((m1.dir - m2.dir + Math.PI) % (2 * Math.PI) - Math.PI)
-                        if (angDiff > Math.PI) angDiff = 2 * Math.PI - angDiff
-                        if (angDiff < dirThresh) {
-                            bestD = dSq
-                            bestJ = j
+                    var bestDistSq = distThreshSq + 1.0
+                    var bestMatchIdx = -1
+
+                    for (l in minutiae2.indices) {
+                        if (l in matchedEnrolled) continue
+                        val el = minutiae2[l]
+
+                        val dx = transformedX - el.x
+                        val dy = transformedY - el.y
+                        val dSq = dx * dx + dy * dy
+
+                        if (dSq <= distThreshSq && dSq < bestDistSq) {
+                            var angDiff = abs(((transformedDir - el.direction + Math.PI) % (2 * Math.PI)) - Math.PI)
+                            if (angDiff > Math.PI) angDiff = 2 * Math.PI - angDiff
+
+                            if (angDiff <= dirThresh) {
+                                if (qk.type.isNotEmpty() && el.type.isNotEmpty() && qk.type != el.type) {
+                                    if (dSq > 8.0 * 8.0) continue
+                                }
+                                bestDistSq = dSq
+                                bestMatchIdx = l
+                            }
                         }
+                    }
+
+                    if (bestMatchIdx != -1) {
+                        matchedEnrolled.add(bestMatchIdx)
+                        currentMatches++
                     }
                 }
 
-                if (bestJ != -1) {
-                    usedJ.add(bestJ)
-                    matched++
+                if (currentMatches > maxCoherentMatches) {
+                    maxCoherentMatches = currentMatches
                 }
-            }
-
-            if (matched > bestMatches) {
-                bestMatches = matched
             }
         }
 
-        val denom = max(minutiae1.size, minutiae2.size).toDouble()
-        val score = if (denom > 0) (bestMatches / denom).coerceIn(0.0, 1.0) else 0.0
-        val matched = score >= threshold
+        // Genuine match requires at least 8 coherent minutiae points
+        val effectiveMatches = if (maxCoherentMatches >= 8) maxCoherentMatches else 0
+        val avgCount = (minutiae1.size + minutiae2.size) / 2.0
+        val score = if (avgCount > 0) (effectiveMatches / avgCount).coerceIn(0.0, 1.0) else 0.0
+        val matched = score >= 0.48
 
         VerifyResult(
             matched = matched,
             confidenceScore = score,
-            matchCount = bestMatches,
+            matchCount = effectiveMatches,
             executionTimeMs = System.currentTimeMillis() - startTime,
-            message = if (matched) "Identity verified successfully ($bestMatches matching minutiae)" else "Fingerprints did not match ($bestMatches matching minutiae)"
+            message = if (matched) "Identity verified successfully ($effectiveMatches matching minutiae)" else "Fingerprints did not match ($effectiveMatches matching minutiae)"
         )
     }
 

@@ -1,0 +1,24 @@
+# Cloud service (cloud_app.py) dependencies only — templatization + matching.
+#
+# Deliberately excludes everything on-device-tier: torchvision, ultralytics,
+# tensorflow, mediapipe, scikit-image, and the dev-tooling set (streamlit, pandas,
+# altair, matplotlib, requests, scikit-learn). Those are what YOLO/liveness/U2Net/
+# Zero-DCE/labtool/benchmark.py need — none of them run in this process. See the
+# split table in the architecture plan for the full reasoning.
+#
+# networkx is likewise excluded — it's only pulled in by one of nine bake-off
+# matching candidates (algorithms/networkx_graph.py), not the shipped default
+# ("modern") matching.py actually uses.
+
+# torch's default PyPI wheel bundles full CUDA/cuDNN (~4GB of nvidia-* packages)
+# for GPU support this service never uses — this VM has no GPU. The +cpu build
+# from PyTorch's own CPU-only wheel index avoids that entirely.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+flask==3.1.3
+flask-cors==6.0.2
+numpy==1.26.4
+scipy>=1.11.0
+torch==2.12.0+cpu
+opencv-python-headless==4.9.0.80
+gunicorn>=21.2.0
