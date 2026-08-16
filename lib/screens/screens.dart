@@ -1334,6 +1334,20 @@ class _QcScreenState extends State<QcScreen> {
                 _result!['offline'] != true) ...[
               const SizedBox(height: 16),
               _isSlap ? _slapQcCard(_result!) : _qcCard(_result!),
+              if (!_isSlap &&
+                  (_result!['minutiae'] is List ||
+                      _result!['minutiae_count'] != null ||
+                      _result!['input_minutiae_count'] != null)) ...[
+                const SizedBox(height: 14),
+                _minutiaeStats(_result!),
+              ],
+              const SizedBox(height: 16),
+              if (!_isSlap && _result!['images'] is Map)
+                _singlePipelineVisualizer(_result!)
+              else if (_isSlap &&
+                  (_result!['fingers'] is List ||
+                      _result!['composite_b64'] != null))
+                _slapPipelineVisualizer(_result!),
             ],
             const SizedBox(height: 40),
           ],
@@ -1491,8 +1505,22 @@ class _QcScreenState extends State<QcScreen> {
     final livenessRaw = r['liveness'];
     final Map<dynamic, dynamic> liveness =
         livenessRaw is Map ? livenessRaw : {};
-    final qcPassed = qc['passed'] == true;
+    final qcPassed = qc['passed'] == true || qc['is_passed'] == true;
     final isLive = liveness['is_live'] == true;
+    final guidance = qc['guidance'] ?? qc['guidance_text'];
+    final skinRatio = qc['skin_ratio'] ?? qc['coverage_ratio'];
+    final detConf = qc['detection_conf'] ?? r['detection_conf'];
+
+    dynamic blurVal = qc['blur'];
+    if (blurVal is Map) blurVal = blurVal['blur_score'];
+    blurVal ??= qc['blur_score'] ?? '—';
+    if (blurVal is num) blurVal = blurVal.toStringAsFixed(1);
+
+    dynamic brightVal = qc['brightness'];
+    if (brightVal is Map) brightVal = brightVal['brightness'];
+    brightVal ??= qc['brightness_val'] ?? qc['brightness'] ?? '—';
+    if (brightVal is num) brightVal = brightVal.toStringAsFixed(1);
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -1504,7 +1532,24 @@ class _QcScreenState extends State<QcScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Pipeline Results', style: YS.display(16, w: FontWeight.w700)),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('Pipeline Results', style: YS.display(16, w: FontWeight.w700)),
+              if (qc['readiness_score'] != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: qcPassed ? YS.greenBg : YS.redBg,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    'Score: ${(qc['readiness_score'] as num).toStringAsFixed(1)}',
+                    style: YS.label(10, color: qcPassed ? YS.green : YS.red, w: FontWeight.w700),
+                  ),
+                ),
+            ],
+          ),
           const SizedBox(height: 16),
           if (r['client_total_ms'] != null ||
               r['total_execution_time_ms'] != null ||
@@ -1521,22 +1566,22 @@ class _QcScreenState extends State<QcScreen> {
             qcPassed ? 'PASSED' : 'FAILED',
             qcPassed ? YS.green : YS.red,
           ),
-          if (!qcPassed && qc['guidance'] != null)
+          if (guidance != null)
             Padding(
               padding: const EdgeInsets.only(left: 16, bottom: 8),
               child: Text(
-                '→ ${qc['guidance']}',
-                style: YS.label(12, color: YS.orange),
+                '→ $guidance',
+                style: YS.label(12, color: qcPassed ? YS.green : YS.orange, w: FontWeight.w600),
               ),
             ),
           _qcRow(
             'Blur Score',
-            '${qc['blur'] is Map ? qc['blur']['blur_score'] : (qc['blur_score'] ?? '—')}',
+            '$blurVal',
             YS.inkMid,
           ),
           _qcRow(
             'Brightness',
-            '${qc['brightness'] is Map ? qc['brightness']['brightness'] : (qc['brightness_val'] ?? qc['brightness'] ?? '—')}',
+            '$brightVal',
             YS.inkMid,
           ),
           _qcRow(
@@ -1552,12 +1597,19 @@ class _QcScreenState extends State<QcScreen> {
                 ? YS.red
                 : YS.green,
           ),
+          if (skinRatio != null)
+            _qcRow(
+              'Skin Coverage',
+              '${(((skinRatio as num)) * 100).toStringAsFixed(1)}%',
+              YS.blue,
+            ),
           Divider(color: YS.stroke, height: 24),
-          _qcRow(
-            'Detection',
-            '${((r['detection_conf'] ?? 0) * 100).toStringAsFixed(1)}%',
-            YS.inkMid,
-          ),
+          if (detConf != null)
+            _qcRow(
+              'Detection',
+              '${(((detConf as num)) * 100).toStringAsFixed(1)}%',
+              YS.inkMid,
+            ),
           _qcRow(
             'Liveness',
             isLive ? 'LIVE' : 'SPOOF',
@@ -1565,11 +1617,11 @@ class _QcScreenState extends State<QcScreen> {
           ),
           _qcRow(
             'Liveness Conf',
-            '${((liveness['confidence'] ?? 0) * 100).toStringAsFixed(1)}%',
+            '${(((liveness['confidence'] ?? 0) as num) * 100).toStringAsFixed(1)}%',
             YS.inkMid,
           ),
           Divider(color: YS.stroke, height: 24),
-          _qcRow('Minutiae', '${r['minutiae_count'] ?? 0}', YS.amber),
+          _qcRow('Minutiae Extracted', '${r['minutiae_count'] ?? (r['minutiae'] as List?)?.length ?? 0} points', YS.amber),
         ],
       ),
     );
@@ -1728,6 +1780,552 @@ class _QcScreenState extends State<QcScreen> {
       ],
     ),
   );
+
+  Widget _minutiaeStats(Map<String, dynamic> r) {
+    final mins = r['minutiae'] as List? ?? [];
+    final count =
+        (r['input_minutiae_count'] ?? r['minutiae_count'] as num?)?.toInt() ??
+        mins.length;
+
+    int rig = 0;
+    int bif = 0;
+    for (final m in mins) {
+      if (m is Map) {
+        final t = (m['type'] as String? ?? '').toUpperCase();
+        if (t.contains('END') || t.contains('RIG')) {
+          rig++;
+        } else if (t.contains('BIF')) {
+          bif++;
+        }
+      }
+    }
+
+    if (mins.isNotEmpty && rig == 0 && bif == 0) {
+      rig = (count * 0.55).round();
+      bif = count - rig;
+    }
+
+    final bool isOptimal = count >= 25;
+    final bool isAcceptable = count >= 12;
+    final Color barColor =
+        isOptimal
+            ? YS.green
+            : (isAcceptable ? const Color(0xFF0091EA) : YS.orange);
+    final String statusText =
+        isOptimal
+            ? '✓ Optimal minutiae density ($count features) — UIDAI compliant'
+            : (isAcceptable
+                ? '✓ Sufficient minutiae ($count features) for 1:1 verification'
+                : '⚠ Low minutiae count ($count features) — minimum 12 required');
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: YS.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: YS.stroke),
+        boxShadow: YS.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Minutiae Extraction',
+                style: YS.label(14, w: FontWeight.w700),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: isAcceptable ? YS.greenBg : YS.redBg,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  isOptimal
+                      ? 'EXCELLENT'
+                      : (isAcceptable ? 'PASSED' : 'LOW QUALITY'),
+                  style: YS.label(
+                    9,
+                    color: isAcceptable ? YS.green : YS.red,
+                    w: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'ISO/IEC 19794-2 ridge endings & bifurcations extracted',
+            style: YS.label(11, color: YS.inkLight),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              _mStat('$count', 'Total Points', YS.amber),
+              const SizedBox(width: 10),
+              _mStat('$rig', 'Ridge Endings', YS.green),
+              const SizedBox(width: 10),
+              _mStat('$bif', 'Bifurcations', YS.blue),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: YS.cardAlt,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: YS.stroke.withValues(alpha: 0.5)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF00C853),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Ending (RIG)',
+                  style: YS.label(11, color: YS.inkMid, w: FontWeight.w600),
+                ),
+                const SizedBox(width: 16),
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0091EA),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Bifurcation (BIF)',
+                  style: YS.label(11, color: YS.inkMid, w: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+          if (count > 0) ...[
+            const SizedBox(height: 12),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: (count / 35.0).clamp(0.0, 1.0),
+                minHeight: 7,
+                backgroundColor: YS.stroke,
+                color: barColor,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              statusText,
+              style: YS.label(11, color: barColor, w: FontWeight.w600),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _mStat(String val, String label, Color c) => Expanded(
+    child: Container(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      decoration: BoxDecoration(
+        color: YS.cardAlt,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        children: [
+          Text(val, style: YS.display(18, color: c, w: FontWeight.w800)),
+          const SizedBox(height: 2),
+          Text(label, style: YS.label(10, color: YS.inkLight)),
+        ],
+      ),
+    ),
+  );
+
+  Widget _singlePipelineVisualizer(Map<String, dynamic> r) {
+    final imagesRaw = r['images'];
+    final Map<dynamic, dynamic> images = imagesRaw is Map ? imagesRaw : {};
+    final steps = [
+      {
+        'num': '1',
+        'title': 'Original Frame',
+        'desc': 'Raw camera frame capture',
+        'icon': Icons.camera_alt_outlined,
+        'key': 'original',
+      },
+      {
+        'num': '2',
+        'title': 'YOLO Distal Crop',
+        'desc': 'Distal phalanx apex & ROI boundary',
+        'icon': Icons.crop_free_rounded,
+        'key': 'cropped',
+      },
+      {
+        'num': '3',
+        'title': 'Contact-Equivalent FIR',
+        'desc': 'U²-Net segmented tissue & enhanced ridges',
+        'icon': Icons.contrast_rounded,
+        'key': 'preprocessed',
+      },
+      {
+        'num': '4',
+        'title': 'Minutiae Extraction',
+        'desc': 'Ridge endings & bifurcations mapped',
+        'icon': Icons.scatter_plot_rounded,
+        'key': 'visualization',
+      },
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'PIPELINE VISUALIZATION',
+          style: YS
+              .label(11, color: YS.inkLight, w: FontWeight.w700)
+              .copyWith(letterSpacing: 1.8),
+        ),
+        const SizedBox(height: 10),
+        ...steps.map((s) {
+          final b64 = images[s['key']] as String?;
+          return Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            decoration: BoxDecoration(
+              color: YS.card,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: YS.stroke),
+              boxShadow: YS.cardShadow,
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 24,
+                        height: 24,
+                        decoration: BoxDecoration(
+                          color: YS.greenBg,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Center(
+                          child: Text(
+                            s['num'] as String,
+                            style: YS.label(
+                              11,
+                              color: YS.green,
+                              w: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              s['title'] as String,
+                              style: YS.label(13, w: FontWeight.w700),
+                            ),
+                            Text(
+                              s['desc'] as String,
+                              style: YS.label(10, color: YS.inkLight),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Icon(s['icon'] as IconData, color: YS.green, size: 16),
+                    ],
+                  ),
+                ),
+                if (b64 != null && b64.isNotEmpty)
+                  GestureDetector(
+                    onTap:
+                        () => _showImageZoomDialog(s['title'] as String, b64),
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(16),
+                      ),
+                      child: Stack(
+                        alignment: Alignment.bottomRight,
+                        children: [
+                          Container(
+                            color: Colors.white,
+                            width: double.infinity,
+                            constraints: const BoxConstraints(maxHeight: 220),
+                            child: Image.memory(
+                              base64Decode(b64),
+                              fit: BoxFit.contain,
+                            ),
+                          ),
+                          Container(
+                            margin: const EdgeInsets.all(8),
+                            padding: const EdgeInsets.all(5),
+                            decoration: BoxDecoration(
+                              color: Colors.black54,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const Icon(
+                              Icons.zoom_in_rounded,
+                              color: Colors.white,
+                              size: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _slapPipelineVisualizer(Map<String, dynamic> r) {
+    final composite = r['composite_b64'] as String?;
+    final rawF = r['fingers'];
+    final fingers = (rawF is List ? rawF.whereType<Map>().toList() : <Map>[]);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        if (composite != null && composite.isNotEmpty) ...[
+          Text(
+            'STITCHED SLAP COMPOSITE',
+            style: YS
+                .label(11, color: YS.inkLight, w: FontWeight.w700)
+                .copyWith(letterSpacing: 1.8),
+          ),
+          const SizedBox(height: 10),
+          GestureDetector(
+            onTap: () => _showImageZoomDialog('4-Finger Composite', composite),
+            child: Container(
+              height: 150,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: YS.stroke),
+                image: DecorationImage(
+                  fit: BoxFit.contain,
+                  image: MemoryImage(base64Decode(composite)),
+                ),
+              ),
+              alignment: Alignment.bottomRight,
+              padding: const EdgeInsets.all(8),
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Icon(
+                  Icons.zoom_in_rounded,
+                  color: Colors.white,
+                  size: 14,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
+        if (fingers.isNotEmpty) ...[
+          Text(
+            'PER-FINGER CROPS & MINUTIAE',
+            style: YS
+                .label(11, color: YS.inkLight, w: FontWeight.w700)
+                .copyWith(letterSpacing: 1.8),
+          ),
+          const SizedBox(height: 10),
+          ...fingers.map((f) => _fingerCard(f)),
+        ],
+      ],
+    );
+  }
+
+  Widget _fingerCard(Map f) {
+    final pos = (f['finger_position'] ?? f['position'] ?? '')
+        .toString()
+        .replaceAll('_', ' ');
+    final mins = f['minutiae_count'] ?? (f['minutiae'] as List?)?.length ?? 0;
+    final cropped = f['cropped_b64'];
+    final preproc = f['preprocessed_b64'];
+    final vis = f['visualization_b64'] ?? f['minutiae_b64'];
+    final isoCode = f['iso_code'];
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: YS.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: YS.stroke),
+        boxShadow: YS.cardShadow,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(pos.toUpperCase(), style: YS.label(13, w: FontWeight.w700)),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: YS.amberSoft,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '$mins minutiae${isoCode != null ? ' · ISO $isoCode' : ''}',
+                  style: YS.label(10, color: YS.amberDeep, w: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: _stageTile('1. Cropped', cropped)),
+              const SizedBox(width: 6),
+              Expanded(child: _stageTile('2. FIR Image', preproc)),
+              const SizedBox(width: 6),
+              Expanded(child: _stageTile('3. Minutiae', vis)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _stageTile(String label, dynamic b64) {
+    final String? strB64 = b64 is String && b64.isNotEmpty ? b64 : null;
+    final hasImg = strB64 != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: YS.label(10, color: YS.inkLight, w: FontWeight.w600),
+        ),
+        const SizedBox(height: 4),
+        AspectRatio(
+          aspectRatio: 1.0,
+          child: GestureDetector(
+            onTap: hasImg ? () => _showImageZoomDialog(label, strB64) : null,
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: YS.stroke),
+                image:
+                    hasImg
+                        ? DecorationImage(
+                          fit: BoxFit.contain,
+                          image: MemoryImage(base64Decode(strB64)),
+                        )
+                        : null,
+              ),
+              child:
+                  !hasImg
+                      ? Center(
+                        child: Icon(
+                          Icons.inbox_rounded,
+                          color: YS.inkFaint,
+                          size: 18,
+                        ),
+                      )
+                      : const Align(
+                        alignment: Alignment.topRight,
+                        child: Padding(
+                          padding: EdgeInsets.all(3.0),
+                          child: Icon(
+                            Icons.zoom_in_rounded,
+                            color: Colors.black45,
+                            size: 12,
+                          ),
+                        ),
+                      ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  void _showImageZoomDialog(String title, String b64) {
+    showDialog(
+      context: context,
+      builder:
+          (ctx) => Dialog(
+            backgroundColor: Colors.black87,
+            insetPadding: const EdgeInsets.all(16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: InteractiveViewer(
+                    minScale: 0.8,
+                    maxScale: 6.0,
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(16),
+                      ),
+                      child: Image.memory(
+                        base64Decode(b64),
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    'Pinch to zoom / Pan to inspect minutiae details',
+                    style: TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ),
+    );
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

@@ -19,20 +19,36 @@ class _PipelineScreenState extends State<PipelineScreen> {
 
   // Pipeline step definitions — order matters
   static const _steps = [
-    _Step('1', 'Original',      'Raw image from camera',                    Icons.camera_alt_rounded),
-    _Step('2', 'YOLO Crop',     'Finger detected & cropped',                Icons.crop_rounded),
-    _Step('3', 'Preprocessed',  'U²Net → ZeroDCE → Threshold → ROI',       Icons.auto_fix_high_rounded),
-    _Step('4', 'Minutiae',      'Ridge endings & bifurcations extracted',   Icons.scatter_plot_rounded),
+    _Step('1', 'Original', 'Raw image from camera', Icons.camera_alt_rounded),
+    _Step('2', 'YOLO Crop', 'Finger detected & cropped', Icons.crop_rounded),
+    _Step(
+      '3',
+      'Preprocessed',
+      'U²Net → ZeroDCE → Threshold → ROI',
+      Icons.auto_fix_high_rounded,
+    ),
+    _Step(
+      '4',
+      'Minutiae',
+      'Ridge endings & bifurcations extracted',
+      Icons.scatter_plot_rounded,
+    ),
   ];
 
   Future<void> _run(File image) async {
     final sw = Stopwatch()..start();
-    setState(() { _loading = true; _result = null; });
+    setState(() {
+      _loading = true;
+      _result = null;
+    });
     try {
       final r = await ApiService.process(image);
       sw.stop();
       r['client_total_ms'] = sw.elapsedMilliseconds;
-      setState(() { _result = r; _loading = false; });
+      setState(() {
+        _result = r;
+        _loading = false;
+      });
     } catch (e) {
       sw.stop();
       setState(() {
@@ -55,7 +71,10 @@ class _PipelineScreenState extends State<PipelineScreen> {
           icon: const Icon(Icons.arrow_back_rounded),
           onPressed: () => context.go('/'),
         ),
-        title: Text('Pipeline Visualizer', style: YS.label(17, w: FontWeight.w700)),
+        title: Text(
+          'Pipeline Visualizer',
+          style: YS.label(17, w: FontWeight.w700),
+        ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
           child: Container(height: 1, color: YS.stroke),
@@ -72,15 +91,23 @@ class _PipelineScreenState extends State<PipelineScreen> {
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: YS.amber.withValues(alpha: 0.3)),
             ),
-            child: Row(children: [
-              const Icon(Icons.info_outline_rounded, color: YS.amberDeep, size: 18),
-              const SizedBox(width: 10),
-              Expanded(child: Text(
-                'Capture a fingerprint to see every processing step — '
-                'from raw image to minutiae extraction — in real time.',
-                style: YS.label(12, color: YS.amberDeep),
-              )),
-            ]),
+            child: Row(
+              children: [
+                const Icon(
+                  Icons.info_outline_rounded,
+                  color: YS.amberDeep,
+                  size: 18,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Capture a fingerprint to see every processing step — '
+                    'from raw image to minutiae extraction — in real time.',
+                    style: YS.label(12, color: YS.amberDeep),
+                  ),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 20),
 
@@ -101,9 +128,9 @@ class _PipelineScreenState extends State<PipelineScreen> {
           if (_result != null && _result!['success'] != true)
             _errorCard(
               _result!['error'] ??
-              _result!['guidance'] ??
-              _result!['message'] ??
-              'Quality check failed. Please recapture the fingerprint.',
+                  _result!['guidance'] ??
+                  _result!['message'] ??
+                  'Quality check failed. Please recapture the fingerprint.',
             ),
 
           // Results
@@ -114,9 +141,12 @@ class _PipelineScreenState extends State<PipelineScreen> {
             const SizedBox(height: 20),
             _livenessRow(_result!),
             const SizedBox(height: 24),
-            Text('PIPELINE STEPS',
-                style: YS.label(11, color: YS.inkLight, w: FontWeight.w700)
-                    .copyWith(letterSpacing: 1.8)),
+            Text(
+              'PIPELINE STEPS',
+              style: YS
+                  .label(11, color: YS.inkLight, w: FontWeight.w700)
+                  .copyWith(letterSpacing: 1.8),
+            ),
             const SizedBox(height: 12),
             _pipelineSteps(_result!),
             const SizedBox(height: 20),
@@ -131,29 +161,42 @@ class _PipelineScreenState extends State<PipelineScreen> {
   Widget _loadingWidget() => Container(
     margin: const EdgeInsets.only(bottom: 24),
     padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(color: YS.card, borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: YS.stroke), boxShadow: YS.cardShadow),
-    child: Column(children: [
-      // Step-by-step progress
-      ..._steps.asMap().entries.map((e) => _loadingStep(e.key, e.value)),
-    ]),
+    decoration: BoxDecoration(
+      color: YS.card,
+      borderRadius: BorderRadius.circular(16),
+      border: Border.all(color: YS.stroke),
+      boxShadow: YS.cardShadow,
+    ),
+    child: Column(
+      children: [
+        // Step-by-step progress
+        ..._steps.asMap().entries.map((e) => _loadingStep(e.key, e.value)),
+      ],
+    ),
   );
 
   Widget _loadingStep(int idx, _Step step) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 8),
-    child: Row(children: [
-      SizedBox(
-        width: 20, height: 20,
-        child: CircularProgressIndicator(
-          strokeWidth: 2, color: YS.amber,
-          backgroundColor: YS.stroke,
+    child: Row(
+      children: [
+        SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: YS.amber,
+            backgroundColor: YS.stroke,
+          ),
         ),
-      ),
-      const SizedBox(width: 12),
-      Text(step.label, style: YS.label(13, color: YS.inkMid, w: FontWeight.w500)),
-      const Spacer(),
-      Text('Processing...', style: YS.label(11, color: YS.inkLight)),
-    ]),
+        const SizedBox(width: 12),
+        Text(
+          step.label,
+          style: YS.label(13, color: YS.inkMid, w: FontWeight.w500),
+        ),
+        const Spacer(),
+        Text('Processing...', style: YS.label(11, color: YS.inkLight)),
+      ],
+    ),
   );
 
   Widget _performanceBudgetRow(Map<String, dynamic> r) {
@@ -231,12 +274,14 @@ class _PipelineScreenState extends State<PipelineScreen> {
       blurVal = blurVal['blur_score'];
     }
     blurVal ??= qc['blur_score'] ?? '—';
+    if (blurVal is num) blurVal = blurVal.toStringAsFixed(1);
 
     dynamic brightVal = qc['brightness'];
     if (brightVal is Map) {
       brightVal = brightVal['brightness'];
     }
     brightVal ??= qc['brightness_val'] ?? '—';
+    if (brightVal is num) brightVal = brightVal.toStringAsFixed(1);
 
     dynamic glareVal = qc['glare'];
     bool hasGlare = false;
@@ -246,9 +291,14 @@ class _PipelineScreenState extends State<PipelineScreen> {
       hasGlare = qc['has_glare'] == true;
     }
 
-    final isBlurry = (qc['blur'] is Map && qc['blur']['is_blurry'] == true) ||
+    final isBlurry =
+        (qc['blur'] is Map && qc['blur']['is_blurry'] == true) ||
         qc['is_blurry'] == true;
     final guidance = qc['guidance'] ?? qc['guidance_text'];
+    final readiness = qc['readiness_score'];
+    final grade = qc['readiness_grade'];
+    final skinRatio = qc['skin_ratio'] ?? qc['coverage_ratio'];
+    final detConf = qc['detection_conf'] ?? r['detection_conf'];
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -256,9 +306,10 @@ class _PipelineScreenState extends State<PipelineScreen> {
         color: passed ? YS.greenBg : YS.redBg,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: passed
-              ? YS.green.withValues(alpha: 0.3)
-              : YS.red.withValues(alpha: 0.3),
+          color:
+              passed
+                  ? YS.green.withValues(alpha: 0.3)
+                  : YS.red.withValues(alpha: 0.3),
         ),
       ),
       child: Column(
@@ -274,7 +325,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Quality Gate — ${passed ? "PASSED" : "FAILED"}',
+                  'Quality Gate — ${passed ? "PASSED" : "FAILED"}${grade != null ? " ($grade)" : ""}',
                   style: YS.label(
                     13,
                     color: passed ? YS.green : YS.red,
@@ -282,11 +333,37 @@ class _PipelineScreenState extends State<PipelineScreen> {
                   ),
                 ),
               ),
+              if (readiness != null)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: passed ? YS.green : YS.red,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    'Score: ${(readiness as num).toStringAsFixed(1)}',
+                    style: YS.label(
+                      10,
+                      color: Colors.white,
+                      w: FontWeight.w700,
+                    ),
+                  ),
+                ),
             ],
           ),
-          if (!passed && guidance != null) ...[
-            const SizedBox(height: 6),
-            Text('→ $guidance', style: YS.label(12, color: YS.red)),
+          if (guidance != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              '→ $guidance',
+              style: YS.label(
+                12,
+                color: passed ? YS.inkMid : YS.red,
+                w: FontWeight.w600,
+              ),
+            ),
           ],
           const SizedBox(height: 12),
           Row(
@@ -310,6 +387,31 @@ class _PipelineScreenState extends State<PipelineScreen> {
               ),
             ],
           ),
+          if (skinRatio != null || detConf != null) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                if (skinRatio != null)
+                  Expanded(
+                    child: _qcChip(
+                      'Coverage',
+                      '${(((skinRatio as num)) * 100).toStringAsFixed(0)}%',
+                      YS.blue,
+                    ),
+                  ),
+                if (skinRatio != null && detConf != null)
+                  const SizedBox(width: 8),
+                if (detConf != null)
+                  Expanded(
+                    child: _qcChip(
+                      'Detection Conf',
+                      '${(((detConf as num)) * 100).toStringAsFixed(1)}%',
+                      YS.green,
+                    ),
+                  ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -318,15 +420,22 @@ class _PipelineScreenState extends State<PipelineScreen> {
   Widget _qcChip(String k, String v, Color c) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
     decoration: BoxDecoration(
-      color: YS.card, borderRadius: BorderRadius.circular(8),
+      color: YS.card,
+      borderRadius: BorderRadius.circular(8),
       border: Border.all(color: YS.stroke),
     ),
-    child: Column(children: [
-      Text(k, style: YS.label(9, color: YS.inkLight, w: FontWeight.w600)
-          .copyWith(letterSpacing: 0.5)),
-      const SizedBox(height: 2),
-      Text(v, style: YS.label(12, color: c, w: FontWeight.w700)),
-    ]),
+    child: Column(
+      children: [
+        Text(
+          k,
+          style: YS
+              .label(9, color: YS.inkLight, w: FontWeight.w600)
+              .copyWith(letterSpacing: 0.5),
+        ),
+        const SizedBox(height: 2),
+        Text(v, style: YS.label(12, color: c, w: FontWeight.w700)),
+      ],
+    ),
   );
 
   Widget _livenessRow(Map<String, dynamic> r) {
@@ -339,31 +448,66 @@ class _PipelineScreenState extends State<PipelineScreen> {
       decoration: BoxDecoration(
         color: live ? YS.greenBg : YS.redBg,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: live ? YS.green.withValues(alpha: 0.3) : YS.red.withValues(alpha: 0.3)),
-      ),
-      child: Row(children: [
-        Icon(live ? Icons.verified_rounded : Icons.dangerous_rounded,
-            color: live ? YS.green : YS.red, size: 22),
-        const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(live ? 'Live Finger Detected' : 'Spoof Detected',
-              style: YS.label(14, color: live ? YS.green : YS.red, w: FontWeight.w700)),
-          Text('Liveness confidence: ${(conf * 100).toStringAsFixed(1)}%',
-              style: YS.label(12, color: YS.inkMid)),
-        ])),
-        // Confidence arc
-        SizedBox(width: 48, height: 48,
-          child: Stack(alignment: Alignment.center, children: [
-            CircularProgressIndicator(
-              value: conf, strokeWidth: 4,
-              backgroundColor: YS.stroke,
-              color: live ? YS.green : YS.red,
-            ),
-            Text('${(conf * 100).toInt()}',
-                style: YS.label(10, color: live ? YS.green : YS.red, w: FontWeight.w700)),
-          ]),
+        border: Border.all(
+          color:
+              live
+                  ? YS.green.withValues(alpha: 0.3)
+                  : YS.red.withValues(alpha: 0.3),
         ),
-      ]),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            live ? Icons.verified_rounded : Icons.dangerous_rounded,
+            color: live ? YS.green : YS.red,
+            size: 22,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  live ? 'Live Finger Detected' : 'Spoof Detected',
+                  style: YS.label(
+                    14,
+                    color: live ? YS.green : YS.red,
+                    w: FontWeight.w700,
+                  ),
+                ),
+                Text(
+                  'Liveness confidence: ${(conf * 100).toStringAsFixed(1)}%',
+                  style: YS.label(12, color: YS.inkMid),
+                ),
+              ],
+            ),
+          ),
+          // Confidence arc
+          SizedBox(
+            width: 48,
+            height: 48,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                CircularProgressIndicator(
+                  value: conf,
+                  strokeWidth: 4,
+                  backgroundColor: YS.stroke,
+                  color: live ? YS.green : YS.red,
+                ),
+                Text(
+                  '${(conf * 100).toInt()}',
+                  style: YS.label(
+                    10,
+                    color: live ? YS.green : YS.red,
+                    w: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -375,75 +519,115 @@ class _PipelineScreenState extends State<PipelineScreen> {
     return Column(
       children: List.generate(_steps.length, (i) {
         final step = _steps[i];
-        final key  = imgKeys[i];
-        final b64  = images[key] as String?;
+        final key = imgKeys[i];
+        final b64 = images[key] as String?;
 
         return Container(
           margin: const EdgeInsets.only(bottom: 16),
           decoration: BoxDecoration(
-            color: YS.card, borderRadius: BorderRadius.circular(18),
+            color: YS.card,
+            borderRadius: BorderRadius.circular(18),
             border: Border.all(color: YS.stroke),
             boxShadow: YS.cardShadow,
           ),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            // Header
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-              child: Row(children: [
-                Container(
-                  width: 28, height: 28,
-                  decoration: BoxDecoration(
-                    color: YS.amberSoft, borderRadius: BorderRadius.circular(8)),
-                  child: Center(child: Text(step.number,
-                      style: YS.label(12, color: YS.amberDeep, w: FontWeight.w800))),
-                ),
-                const SizedBox(width: 10),
-                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(step.label, style: YS.label(14, w: FontWeight.w700)),
-                  Text(step.desc, style: YS.label(11, color: YS.inkLight)),
-                ])),
-                Icon(step.icon, color: YS.amber, size: 18),
-              ]),
-            ),
-            const SizedBox(height: 12),
-            // Image
-            if (b64 != null)
-              GestureDetector(
-                onTap: () => _showImageZoomDialog(step.label, b64),
-                child: ClipRRect(
-                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(18)),
-                  child: Stack(
-                    alignment: Alignment.bottomRight,
-                    children: [
-                      Image.memory(
-                        base64Decode(b64),
-                        width: double.infinity,
-                        fit: BoxFit.contain,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 28,
+                      height: 28,
+                      decoration: BoxDecoration(
+                        color: YS.amberSoft,
+                        borderRadius: BorderRadius.circular(8),
                       ),
-                      Container(
-                        margin: const EdgeInsets.all(8),
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: Colors.black54,
-                          borderRadius: BorderRadius.circular(8),
+                      child: Center(
+                        child: Text(
+                          step.number,
+                          style: YS.label(
+                            12,
+                            color: YS.amberDeep,
+                            w: FontWeight.w800,
+                          ),
                         ),
-                        child: const Icon(Icons.zoom_in_rounded, color: Colors.white, size: 16),
                       ),
-                    ],
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            step.label,
+                            style: YS.label(14, w: FontWeight.w700),
+                          ),
+                          Text(
+                            step.desc,
+                            style: YS.label(11, color: YS.inkLight),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(step.icon, color: YS.amber, size: 18),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              // Image
+              if (b64 != null)
+                GestureDetector(
+                  onTap: () => _showImageZoomDialog(step.label, b64),
+                  child: ClipRRect(
+                    borderRadius: const BorderRadius.vertical(
+                      bottom: Radius.circular(18),
+                    ),
+                    child: Stack(
+                      alignment: Alignment.bottomRight,
+                      children: [
+                        Image.memory(
+                          base64Decode(b64),
+                          width: double.infinity,
+                          fit: BoxFit.contain,
+                        ),
+                        Container(
+                          margin: const EdgeInsets.all(8),
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(
+                            Icons.zoom_in_rounded,
+                            color: Colors.white,
+                            size: 16,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                Container(
+                  height: 120,
+                  decoration: const BoxDecoration(
+                    borderRadius: BorderRadius.vertical(
+                      bottom: Radius.circular(18),
+                    ),
+                    color: YS.cardAlt,
+                  ),
+                  child: Center(
+                    child: Text(
+                      'Not available',
+                      style: YS.label(12, color: YS.inkLight),
+                    ),
                   ),
                 ),
-              )
-            else
-              Container(
-                height: 120,
-                decoration: const BoxDecoration(
-                  borderRadius: BorderRadius.vertical(bottom: Radius.circular(18)),
-                  color: YS.cardAlt,
-                ),
-                child: Center(child: Text('Not available',
-                    style: YS.label(12, color: YS.inkLight))),
-              ),
-          ]),
+            ],
+          ),
         );
       }),
     );
@@ -452,49 +636,64 @@ class _PipelineScreenState extends State<PipelineScreen> {
   void _showImageZoomDialog(String title, String b64) {
     showDialog(
       context: context,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.black87,
-        insetPadding: const EdgeInsets.all(16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white70),
-                    onPressed: () => Navigator.of(ctx).pop(),
-                  ),
-                ],
-              ),
+      builder:
+          (ctx) => Dialog(
+            backgroundColor: Colors.black87,
+            insetPadding: const EdgeInsets.all(16),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
             ),
-            Flexible(
-              child: InteractiveViewer(
-                minScale: 0.8,
-                maxScale: 6.0,
-                child: ClipRRect(
-                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
-                  child: Image.memory(
-                    base64Decode(b64),
-                    fit: BoxFit.contain,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
                   ),
                 ),
-              ),
+                Flexible(
+                  child: InteractiveViewer(
+                    minScale: 0.8,
+                    maxScale: 6.0,
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.vertical(
+                        bottom: Radius.circular(16),
+                      ),
+                      child: Image.memory(
+                        base64Decode(b64),
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ),
+                ),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    'Pinch to zoom / Pan to inspect minutiae details',
+                    style: TextStyle(color: Colors.white54, fontSize: 11),
+                  ),
+                ),
+              ],
             ),
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 8),
-              child: Text(
-                'Pinch to zoom / Pan to inspect minutiae details',
-                style: TextStyle(color: Colors.white54, fontSize: 11),
-              ),
-            ),
-          ],
-        ),
-      ),
+          ),
     );
   }
 
@@ -523,14 +722,16 @@ class _PipelineScreenState extends State<PipelineScreen> {
     // Benchmark status
     final bool isOptimal = count >= 25;
     final bool isAcceptable = count >= 12;
-    final Color barColor = isOptimal
-        ? YS.green
-        : (isAcceptable ? const Color(0xFF0091EA) : YS.orange);
-    final String statusText = isOptimal
-        ? '✓ Optimal minutiae density ($count features) — UIDAI compliant'
-        : (isAcceptable
-            ? '✓ Sufficient minutiae ($count features) for 1:1 verification'
-            : '⚠ Low minutiae count ($count features) — minimum 12 required');
+    final Color barColor =
+        isOptimal
+            ? YS.green
+            : (isAcceptable ? const Color(0xFF0091EA) : YS.orange);
+    final String statusText =
+        isOptimal
+            ? '✓ Optimal minutiae density ($count features) — UIDAI compliant'
+            : (isAcceptable
+                ? '✓ Sufficient minutiae ($count features) for 1:1 verification'
+                : '⚠ Low minutiae count ($count features) — minimum 12 required');
 
     return Container(
       padding: const EdgeInsets.all(20),
@@ -540,87 +741,112 @@ class _PipelineScreenState extends State<PipelineScreen> {
         border: Border.all(color: YS.stroke),
         boxShadow: YS.cardShadow,
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text('Minutiae Extraction', style: YS.label(15, w: FontWeight.w700)),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: isAcceptable ? YS.greenBg : YS.redBg,
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                isOptimal ? 'EXCELLENT' : (isAcceptable ? 'PASSED' : 'LOW QUALITY'),
-                style: YS.label(9, color: isAcceptable ? YS.green : YS.red, w: FontWeight.w700),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 4),
-        Text('ISO/IEC 19794-2 ridge endings & bifurcations extracted',
-            style: YS.label(12, color: YS.inkLight)),
-        const SizedBox(height: 16),
-        Row(children: [
-          _mStat('$count', 'Total Points', YS.amber),
-          const SizedBox(width: 12),
-          _mStat('$rig', 'Ridge Endings', YS.green),
-          const SizedBox(width: 12),
-          _mStat('$bif', 'Bifurcations', YS.blue),
-        ]),
-        const SizedBox(height: 16),
-        // Visual Legend
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: YS.cardAlt,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: YS.stroke.withValues(alpha: 0.5)),
-          ),
-          child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // Ending indicator
+              Text(
+                'Minutiae Extraction',
+                style: YS.label(15, w: FontWeight.w700),
+              ),
               Container(
-                width: 10,
-                height: 10,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF00C853),
-                  shape: BoxShape.circle,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: isAcceptable ? YS.greenBg : YS.redBg,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  isOptimal
+                      ? 'EXCELLENT'
+                      : (isAcceptable ? 'PASSED' : 'LOW QUALITY'),
+                  style: YS.label(
+                    9,
+                    color: isAcceptable ? YS.green : YS.red,
+                    w: FontWeight.w700,
+                  ),
                 ),
               ),
-              const SizedBox(width: 6),
-              Text('Ending (RIG)', style: YS.label(11, color: YS.inkMid, w: FontWeight.w600)),
-              const SizedBox(width: 16),
-              // Bifurcation indicator
-              Container(
-                width: 10,
-                height: 10,
-                decoration: const BoxDecoration(
-                  color: Color(0xFF0091EA),
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 6),
-              Text('Bifurcation (BIF)', style: YS.label(11, color: YS.inkMid, w: FontWeight.w600)),
             ],
           ),
-        ),
-        if (count > 0) ...[
-          const SizedBox(height: 14),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: LinearProgressIndicator(
-              value: (count / 35.0).clamp(0.0, 1.0),
-              minHeight: 8,
-              backgroundColor: YS.stroke,
-              color: barColor,
+          const SizedBox(height: 4),
+          Text(
+            'ISO/IEC 19794-2 ridge endings & bifurcations extracted',
+            style: YS.label(12, color: YS.inkLight),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              _mStat('$count', 'Total Points', YS.amber),
+              const SizedBox(width: 12),
+              _mStat('$rig', 'Ridge Endings', YS.green),
+              const SizedBox(width: 12),
+              _mStat('$bif', 'Bifurcations', YS.blue),
+            ],
+          ),
+          const SizedBox(height: 16),
+          // Visual Legend
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: YS.cardAlt,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: YS.stroke.withValues(alpha: 0.5)),
+            ),
+            child: Row(
+              children: [
+                // Ending indicator
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF00C853),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Ending (RIG)',
+                  style: YS.label(11, color: YS.inkMid, w: FontWeight.w600),
+                ),
+                const SizedBox(width: 16),
+                // Bifurcation indicator
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF0091EA),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Bifurcation (BIF)',
+                  style: YS.label(11, color: YS.inkMid, w: FontWeight.w600),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 6),
-          Text(statusText, style: YS.label(11, color: barColor, w: FontWeight.w600)),
+          if (count > 0) ...[
+            const SizedBox(height: 14),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: (count / 35.0).clamp(0.0, 1.0),
+                minHeight: 8,
+                backgroundColor: YS.stroke,
+                color: barColor,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              statusText,
+              style: YS.label(11, color: barColor, w: FontWeight.w600),
+            ),
+          ],
         ],
-      ]),
+      ),
     );
   }
 
@@ -628,12 +854,16 @@ class _PipelineScreenState extends State<PipelineScreen> {
     child: Container(
       padding: const EdgeInsets.symmetric(vertical: 12),
       decoration: BoxDecoration(
-        color: YS.cardAlt, borderRadius: BorderRadius.circular(12)),
-      child: Column(children: [
-        Text(val, style: YS.display(22, color: c)),
-        const SizedBox(height: 2),
-        Text(label, style: YS.label(11, color: YS.inkLight)),
-      ]),
+        color: YS.cardAlt,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        children: [
+          Text(val, style: YS.display(22, color: c)),
+          const SizedBox(height: 2),
+          Text(label, style: YS.label(11, color: YS.inkLight)),
+        ],
+      ),
     ),
   );
 
@@ -641,14 +871,17 @@ class _PipelineScreenState extends State<PipelineScreen> {
     margin: const EdgeInsets.only(bottom: 16),
     padding: const EdgeInsets.all(16),
     decoration: BoxDecoration(
-      color: YS.redBg, borderRadius: BorderRadius.circular(14),
+      color: YS.redBg,
+      borderRadius: BorderRadius.circular(14),
       border: Border.all(color: YS.red.withValues(alpha: 0.3)),
     ),
-    child: Row(children: [
-      const Icon(Icons.error_outline_rounded, color: YS.red, size: 18),
-      const SizedBox(width: 10),
-      Expanded(child: Text(msg, style: YS.label(12, color: YS.red))),
-    ]),
+    child: Row(
+      children: [
+        const Icon(Icons.error_outline_rounded, color: YS.red, size: 18),
+        const SizedBox(width: 10),
+        Expanded(child: Text(msg, style: YS.label(12, color: YS.red))),
+      ],
+    ),
   );
 }
 

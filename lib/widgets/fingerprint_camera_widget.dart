@@ -38,13 +38,12 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   CameraController? _ctrl;
   bool _isDisposed = false;
-  CameraLensDirection _lensDirection = CameraLensDirection.back;
+  static const CameraLensDirection _lensDirection = CameraLensDirection.back;
   bool _initializing = false;
   bool _live = false;
   bool _flashing = false;
   bool _torchOn = false;
   bool _autoFlashOn = false;
-  bool _screenLightOn = true;
   File? _captured;
   String? _error;
   double _minZoom = 1.0, _maxZoom = 1.0, _zoom = 2.0;
@@ -840,17 +839,6 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     );
   }
 
-  Future<void> _switchCamera() async {
-    if (_initializing) return;
-    final nextDirection =
-        _lensDirection == CameraLensDirection.back
-            ? CameraLensDirection.front
-            : CameraLensDirection.back;
-    _lensDirection = nextDirection;
-    await _stopCamera();
-    await _startCamera();
-  }
-
   Widget _header() => Container(
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
     decoration: const BoxDecoration(
@@ -868,97 +856,34 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 .copyWith(letterSpacing: 1.0),
           ),
         ),
-        const SizedBox(width: 4),
+        const Spacer(),
         if (_live)
           GestureDetector(
-            onTap: _switchCamera,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(8),
-                color: YS.cardAlt,
-                border: Border.all(color: YS.amber.withValues(alpha: 0.4)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    _lensDirection == CameraLensDirection.front
-                        ? Icons.camera_front_rounded
-                        : Icons.camera_rear_rounded,
-                    size: 13,
-                    color: YS.amber,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    _lensDirection == CameraLensDirection.front
-                        ? 'FRONT'
-                        : 'BACK',
-                    style: YS.label(9, color: YS.amber, w: FontWeight.w800),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        if (_live) const SizedBox(width: 4),
-        if (_live)
-          GestureDetector(
-            onTap:
-                _lensDirection == CameraLensDirection.back
-                    ? _toggleTorch
-                    : () => setState(() => _screenLightOn = !_screenLightOn),
+            onTap: _toggleTorch,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color:
-                      (_lensDirection == CameraLensDirection.back
-                              ? _torchOn
-                              : _screenLightOn)
-                          ? YS.amber
-                          : YS.stroke,
+                  color: _torchOn ? YS.amber : YS.stroke,
                 ),
-                color:
-                    (_lensDirection == CameraLensDirection.back
-                            ? _torchOn
-                            : _screenLightOn)
-                        ? YS.amberSoft
-                        : YS.cardAlt,
+                color: _torchOn ? YS.amberSoft : YS.cardAlt,
               ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    _lensDirection == CameraLensDirection.back
-                        ? (_torchOn
-                            ? Icons.flash_on_rounded
-                            : Icons.flash_off_rounded)
-                        : (_screenLightOn
-                            ? Icons.lightbulb_rounded
-                            : Icons.lightbulb_outline_rounded),
+                    _torchOn ? Icons.flash_on_rounded : Icons.flash_off_rounded,
                     size: 12,
-                    color:
-                        (_lensDirection == CameraLensDirection.back
-                                ? _torchOn
-                                : _screenLightOn)
-                            ? YS.amberDeep
-                            : YS.inkLight,
+                    color: _torchOn ? YS.amberDeep : YS.inkLight,
                   ),
                   const SizedBox(width: 3),
                   Text(
-                    _lensDirection == CameraLensDirection.back
-                        ? (_autoFlashOn ? 'AUTO' : (_torchOn ? 'ON' : 'OFF'))
-                        : (_screenLightOn ? 'LIGHT ON' : 'LIGHT OFF'),
+                    _autoFlashOn ? 'AUTO' : (_torchOn ? 'FLASH ON' : 'FLASH OFF'),
                     style: YS.label(
                       9,
-                      color:
-                          (_lensDirection == CameraLensDirection.back
-                                  ? _torchOn
-                                  : _screenLightOn)
-                              ? YS.amberDeep
-                              : YS.inkLight,
+                      color: _torchOn ? YS.amberDeep : YS.inkLight,
                       w: FontWeight.w700,
                     ),
                   ),
@@ -986,29 +911,6 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 GestureDetector(
                   onTapDown: (d) => _onTap(d, constraints),
                   child: CameraPreview(_ctrl!),
-                ),
-
-              if (_live &&
-                  _lensDirection == CameraLensDirection.front &&
-                  _screenLightOn)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: Container(
-                      decoration: BoxDecoration(
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.9),
-                          width: 8,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.white.withValues(alpha: 0.6),
-                            blurRadius: 20,
-                            spreadRadius: 4,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
                 ),
 
               if (_captured != null) Image.file(_captured!, fit: BoxFit.cover),
