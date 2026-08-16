@@ -107,7 +107,7 @@ class OnDeviceQualityService {
     if (r < 50 || g < 28 || b < 15) return false;
     if ((r - g) < 8) return false; // Neutral gray/white fabric or paper
     if ((r - b) < 14) return false; // Blue/green cloth or background
-    
+
     final int sum = r + g + b;
     if (sum == 0) return false;
     final double nr = r / sum;
@@ -123,6 +123,7 @@ class OnDeviceQualityService {
     required int bytesPerRow,
     int sampleStep = 2,
     bool isSlap = false,
+    String handSide = 'right',
   }) {
     if (yPlaneBytes.isEmpty || width <= 0 || height <= 0) {
       return const QualityAssessmentResult(
@@ -181,7 +182,10 @@ class OnDeviceQualityService {
             final r = pixel.r.toInt().clamp(0, 255);
             final g = pixel.g.toInt().clamp(0, 255);
             final b = pixel.b.toInt().clamp(0, 255);
-            final lum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0, 255);
+            final lum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(
+              0,
+              255,
+            );
 
             if (gIdx < gray.length) {
               gray[gIdx++] = lum;
@@ -236,7 +240,9 @@ class OnDeviceQualityService {
     final double slapGap = effWidth * 0.047;
     final double slapStartX = (effWidth - (4 * slapFingerW + 3 * slapGap)) / 2;
     final double slapKnuckleY = effHeight * 0.80;
-    final slapLengths = [0.50, 0.58, 0.52, 0.40]; // lengths for 4 slots
+    final slapLengths = (isSlap && handSide == 'left')
+        ? <double>[0.50, 0.58, 0.52, 0.40]
+        : <double>[0.40, 0.52, 0.58, 0.50]; // lengths for 4 slots
 
     final List<int> slotSkinCounts = List.filled(4, 0);
     final List<int> slotTotalCounts = List.filled(4, 0);
@@ -323,30 +329,35 @@ class OnDeviceQualityService {
       }
     }
 
-    final double skinRatioInRoi = totalInRoi > 0 ? (skinInRoi / totalInRoi) : 0.0;
-    final double meanBrightness = totalInRoi > 0 ? (totalBrightnessInRoi / totalInRoi) : 0.0;
-    final double glareFraction = totalSampled > 0 ? (overexposedCount / totalSampled) : 0.0;
+    final double skinRatioInRoi =
+        totalInRoi > 0 ? (skinInRoi / totalInRoi) : 0.0;
+    final double meanBrightness =
+        totalInRoi > 0 ? (totalBrightnessInRoi / totalInRoi) : 0.0;
+    final double glareFraction =
+        totalSampled > 0 ? (overexposedCount / totalSampled) : 0.0;
 
     int activeSlotCount = 0;
+    final List<bool> slotFilled = List.filled(4, false);
     if (isSlap) {
       for (int i = 0; i < 4; i++) {
-        final double sRatio = slotTotalCounts[i] > 0
-            ? (slotSkinCounts[i] / slotTotalCounts[i])
-            : 0.0;
-        if (sRatio >= 0.18) {
+        final double sRatio =
+            slotTotalCounts[i] > 0
+                ? (slotSkinCounts[i] / slotTotalCounts[i])
+                : 0.0;
+        if (sRatio >= 0.20) {
           activeSlotCount++;
+          slotFilled[i] = true;
         }
       }
     }
 
-    // Finger Presence Check
-    final double minSkinThreshold = isSlap ? 0.15 : 0.22;
-    final bool isFingerDetected = isSlap
-        ? (activeSlotCount >= 2 || skinRatioInRoi >= minSkinThreshold)
-        : (skinRatioInRoi >= minSkinThreshold);
+    // Strict Finger Presence Check: Slap REQUIRES ALL 4 slots filled!
+    final bool isFingerDetected =
+        isSlap ? (activeSlotCount == 4) : (skinRatioInRoi >= 0.24);
 
     // ── 2. Ridge Sharpness & Blur (Computed on verified skin pixels inside ROI) ─
-    final double currentBlurThreshold = isSlap ? blurThresholdSlap : blurThresholdSingle;
+    final double currentBlurThreshold =
+        isSlap ? blurThresholdSlap : blurThresholdSingle;
     final double blurScore = _computeSkinLaplacianVariance(
       gray,
       skinMask,
@@ -373,8 +384,8 @@ class OnDeviceQualityService {
       offsetX = centroidX - cx;
       offsetY = centroidY - cy;
 
-      final double tolX = rx * (isSlap ? 0.55 : 0.45);
-      final double tolY = ry * (isSlap ? 0.55 : 0.45);
+      final double tolX = rx * (isSlap ? 0.45 : 0.38);
+      final double tolY = ry * (isSlap ? 0.45 : 0.38);
       isRoiAligned = (offsetX.abs() <= tolX) && (offsetY.abs() <= tolY);
 
       if (!isRoiAligned) {
@@ -386,16 +397,32 @@ class OnDeviceQualityService {
       }
     }
 
-    final bool isTooFar = !isFingerDetected || skinRatioInRoi < (isSlap ? 0.18 : 0.28);
-    final bool isTooClose = skinRatioInRoi > 0.98 && (meanBrightness > 70);
+    final bool isTooFar =
+        !isFingerDetected || skinRatioInRoi < (isSlap ? 0.20 : 0.30);
+    final bool isTooClose = skinRatioInRoi > 0.95 && (meanBrightness > 70);
 
     // ── 4. Formulate Actionable Guidance Issues ──────────────────────────────
     final List<String> issues = [];
     if (!isFingerDetected) {
-      issues.add(isSlap ? 'No hand detected — place 4 fingers flat inside guide' : 'No finger detected — place finger inside oval');
+      if (isSlap) {
+        if (activeSlotCount == 0) {
+          issues.add('Place 4 fingers flat inside guide slots');
+        } else {
+          issues.add(
+            'Place all 4 fingers inside slots ($activeSlotCount/4 detected)',
+          );
+        }
+      } else {
+        issues.add('Place fingertip inside oval guide');
+      }
     } else {
-      if (isSlap && activeSlotCount < 3) {
-        issues.add('Place all 4 fingers flat inside slots ($activeSlotCount/4 detected)');
+      if (isSlap && activeSlotCount < 4) {
+        issues.add(
+          'Place all 4 fingers inside slots ($activeSlotCount/4 detected)',
+        );
+      }
+      if (!isRoiAligned && roiGuidance.isNotEmpty) {
+        issues.add(roiGuidance);
       }
       if (isBlurry) {
         issues.add('Finger is blurry — tap screen to focus 🔍');
@@ -409,11 +436,15 @@ class OnDeviceQualityService {
       if (hasGlare) {
         issues.add('Glare detected — adjust angle');
       }
-      if (!isRoiAligned && roiGuidance.isNotEmpty) {
-        issues.add(roiGuidance);
-      }
       if (isTooFar) {
-        issues.add(isSlap ? 'Move hand closer to fill slots' : 'Move finger closer 🔍');
+        issues.add(
+          isSlap
+              ? 'Move hand closer to fill all 4 slots'
+              : 'Move finger closer to fill oval 🔍',
+        );
+      }
+      if (isTooClose) {
+        issues.add('Move finger slightly back');
       }
     }
 
@@ -421,33 +452,61 @@ class OnDeviceQualityService {
     const double blurMax = 180.0;
     final double blurNorm = (blurScore.clamp(0.0, blurMax)) / blurMax;
     const double brightCenter = 130.0;
-    final double brightNorm = max(0.0, 1.0 - (meanBrightness - brightCenter).abs() / brightCenter);
+    final double brightNorm = max(
+      0.0,
+      1.0 - (meanBrightness - brightCenter).abs() / brightCenter,
+    );
     final double glareNorm = hasGlare ? 0.0 : 1.0;
     final double skinNorm = skinRatioInRoi.clamp(0.0, 1.0);
+    final double slotNorm =
+        isSlap ? (activeSlotCount / 4.0) : (isRoiAligned ? 1.0 : 0.5);
 
     double rawScore = 0.0;
-    if (isFingerDetected) {
-      rawScore = (blurNorm * 40.0) + (brightNorm * 25.0) + (glareNorm * 15.0) + (skinNorm * 20.0);
+    if (isFingerDetected && isRoiAligned) {
+      rawScore =
+          (blurNorm * 35.0) +
+          (brightNorm * 25.0) +
+          (glareNorm * 15.0) +
+          (skinNorm * 10.0) +
+          (slotNorm * 15.0);
+    } else if (isFingerDetected) {
+      rawScore = (blurNorm * 25.0) + (brightNorm * 20.0) + (slotNorm * 20.0);
     }
     rawScore = rawScore.clamp(0.0, 100.0);
     final double score = double.parse(rawScore.toStringAsFixed(1));
 
+    if (issues.isEmpty && isFingerDetected && isRoiAligned && score < 90.0) {
+      issues.add('Quality: ${score.toInt()}% — hold steady to reach 90%+');
+    }
+
     String grade = 'Rejected';
-    if (score >= 80.0 && issues.isEmpty) {
+    if (score >= 90.0 && issues.isEmpty) {
       grade = 'Excellent';
-    } else if (score >= 60.0 && issues.isEmpty) {
+    } else if (score >= 75.0) {
       grade = 'Good';
-    } else if (score >= 40.0) {
+    } else if (score >= 50.0) {
       grade = 'Marginal';
     } else {
       grade = 'Rejected';
     }
 
-    final String guidance = issues.isNotEmpty
-        ? issues.first
-        : (isSlap ? '✓ 4 slap fingers clear & sharp — ready to capture' : '✓ Fingerprint clear & sharp — ready to capture');
+    final String guidance =
+        issues.isNotEmpty
+            ? issues.first
+            : (isSlap
+                ? '✓ 4 slap fingers optimal (≥90%) — ready to capture'
+                : '✓ Fingerprint optimal (≥90%) — ready to capture');
 
-    final bool isPassed = issues.isEmpty && isFingerDetected && !isBlurry && !tooDark && !tooBright && !hasGlare;
+    final bool isPassed =
+        issues.isEmpty &&
+        isFingerDetected &&
+        isRoiAligned &&
+        !isBlurry &&
+        !tooDark &&
+        !tooBright &&
+        !hasGlare &&
+        score >= 90.0 &&
+        (!isSlap || activeSlotCount == 4);
 
     final result = QualityAssessmentResult(
       blurScore: double.parse(blurScore.toStringAsFixed(2)),
@@ -512,7 +571,9 @@ class OnDeviceQualityService {
 
       for (int x = step; x < width - step; x += step) {
         final int cIdx = rowCurr + x;
-        if (skinMask.isNotEmpty && cIdx < skinMask.length && skinMask[cIdx] == 0) {
+        if (skinMask.isNotEmpty &&
+            cIdx < skinMask.length &&
+            skinMask[cIdx] == 0) {
           continue;
         }
 
