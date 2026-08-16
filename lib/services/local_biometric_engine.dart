@@ -331,6 +331,9 @@ class LocalBiometricEngine {
       sw.stop();
       _log('enrollSlap', 'Enrolled slap user $name ($uid) with ${fingers.length} fingers');
 
+      final int totalMin = (slapRes['total_minutiae'] as num?)?.toInt() ??
+          fingers.fold<int>(0, (sum, f) => sum + (((f is Map ? f['minutiae_count'] : 0) ?? 0) as int));
+
       return {
         'success': true,
         'name': name,
@@ -338,8 +341,14 @@ class LocalBiometricEngine {
         'batch': batch,
         'hand': hand,
         'finger_count': fingers.length,
+        'enrolled_fingers': fingers,
+        'fingers': fingers,
+        'minutiae_count': totalMin,
+        'total_minutiae': totalMin,
+        'is_live': true,
         'mode': 'offline_on_device',
         'execution_time_ms': sw.elapsedMilliseconds,
+        'total_execution_time_ms': sw.elapsedMilliseconds,
       };
     } catch (e) {
       _logErr('enrollSlap', '$e');

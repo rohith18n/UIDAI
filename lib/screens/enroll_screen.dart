@@ -268,14 +268,16 @@ class _EnrollScreenState extends State<EnrollScreen> {
   }
 
   Widget _resultCard(Map<String, dynamic> r) {
-    final raw = r['enrolled_fingers'];
+    final raw = r['enrolled_fingers'] ?? r['fingers'];
     final enrolledFingers = raw is List ? raw : null;
-    final ok = r['success'] == true || enrolledFingers != null;
+    final int fingerCount = enrolledFingers?.length ?? (r['finger_count'] as num?)?.toInt() ?? 0;
+    final ok = r['success'] == true || enrolledFingers != null || fingerCount > 0;
     final color = ok ? YS.green : YS.red;
     final bg    = ok ? YS.greenBg : YS.redBg;
+    final int totalMins = (r['total_minutiae'] ?? r['minutiae_count'] as num?)?.toInt() ?? 0;
     String msg  = ok
         ? (_isSlap
-            ? '${enrolledFingers?.length ?? 0} finger(s) enrolled successfully!'
+            ? '$fingerCount finger(s) enrolled successfully!'
             : 'Enrolled successfully!')
         : (r['error'] ?? r['message'] ?? r['guidance'] ?? 'Enrollment failed');
     if (r['quality_failed'] == true) msg = r['guidance'] ?? 'Quality check failed';
@@ -306,16 +308,16 @@ class _EnrollScreenState extends State<EnrollScreen> {
                 '${(((r['total_execution_time_ms']) as num) / 1000.0).toStringAsFixed(2)} s',
               ),
           ],
-          if (_isSlap && enrolledFingers != null)
+          if (_isSlap && enrolledFingers != null && enrolledFingers.isNotEmpty) ...[
             ...enrolledFingers.map<Widget>((f) {
               final m = f is Map ? f : <String, dynamic>{};
-              return _row(
-                  (m['finger_position'] ?? '').toString().replaceAll('_', ' ').toUpperCase(),
-                  '${m['minutiae_count'] ?? 0} minutiae',
-                );
-            })
-          else ...[
-            _row('Minutiae Extracted', '${r['minutiae_count'] ?? 0} points'),
+              final fPos = (m['finger_position'] ?? m['position'] ?? 'Finger').toString().replaceAll('_', ' ').toUpperCase();
+              final fMin = m['minutiae_count'] ?? (m['minutiae'] as List?)?.length ?? 0;
+              return _row(fPos, '$fMin minutiae');
+            }),
+            _row('Total Minutiae', '$totalMins points'),
+          ] else ...[
+            _row('Minutiae Extracted', '$totalMins points'),
             _row(
               'Liveness',
               (r['is_live'] == true ||
