@@ -541,9 +541,9 @@ class OnDevicePipelineService {
       }
     }
 
-    // 1. Build Foreground Tissue Mask & Erode to remove boundary cut artifacts
+    // 1. Build Foreground Tissue Mask & Erode moderately to preserve valid perimeter minutiae
     final Uint8List tissueMask = Uint8List(w * h);
-    const int boxR = 8;
+    const int boxR = 6;
     for (int y = 0; y < h; y += 4) {
       for (int x = 0; x < w; x += 4) {
         int ridgeCount = 0;
@@ -556,7 +556,7 @@ class OnDevicePipelineService {
             if (binary[cy * w + cx] == 1) ridgeCount++;
           }
         }
-        if (ridgeCount >= 4) {
+        if (ridgeCount >= 3) {
           for (int cy = y; cy < min(h, y + 4); cy++) {
             for (int cx = x; cx < min(w, x + 4); cx++) {
               tissueMask[cy * w + cx] = 1;
@@ -566,17 +566,17 @@ class OnDevicePipelineService {
       }
     }
 
-    final Uint8List validRegion = _morphErode(tissueMask, w, h, 14);
+    final Uint8List validRegion = _morphErode(tissueMask, w, h, 8);
 
     // 2. Zhang-Suen Morphological Skeletonization (Thinning)
     final Uint8List skeleton = _zhangSuenThinning(Uint8List.fromList(binary), w, h);
 
-    // 3. Crossing Number on Skeleton inside Valid Region
-    final List<Map<String, dynamic>> candidates = [];
+    // 3. Crossing Number on Skeleton inside Valid Region with Path-Traced Angles
+    final List<Map<String, dynamic>> rawCandidates = [];
     const dx = [0, 1, 1, 1, 0, -1, -1, -1];
     const dy = [-1, -1, 0, 1, 1, 1, 0, -1];
 
-    const int margin = 16;
+    const int margin = 8;
     for (int y = margin; y < h - margin; y++) {
       for (int x = margin; x < w - margin; x++) {
         final int idx = y * w + x;
@@ -599,61 +599,186 @@ class OnDevicePipelineService {
         }
 
         final cn = transitions ~/ 2;
-        final String? type = (cn == 1 && neighborCount == 1)
-            ? 'RIG'
-            : ((cn == 3 && neighborCount == 3) ? 'BIF' : null);
 
-        if (type != null) {
-          double angle = 0.0;
-          if (type == 'RIG') {
-            int rx = 0;
-            int ry = 0;
-            for (int step = 1; step <= 6; step++) {
-              for (int i = 0; i < 8; i++) {
-                final nx = (x + dx[i] * step).clamp(0, w - 1);
-                final ny = (y + dy[i] * step).clamp(0, h - 1);
-                if (skeleton[ny * w + nx] == 1) {
-                  rx += dx[i] * step;
-                  ry += dy[i] * step;
-                }
+        if (cn == 1 && neighborCount == 1) {
+          // ── RIDGE ENDING (RIG) ────────────────────────────────────
+          // Trace connected skeleton path inward along the ridge
+          int currX = x;
+          int currY = y;
+          int prevX = x;
+          int prevY = y;
+          int pathLen = 0;
+
+          for (int step = 1; step <= 10; step++) {
+            int nextX = -1;
+            int nextY = -1;
+            for (int i = 0; i < 8; i++) {
+              final nx = (currX + dx[i]).clamp(0, w - 1);
+              final ny = (currY + dy[i]).clamp(0, h - 1);
+              if (skeleton[ny * w + nx] == 1 && !(nx == prevX && ny == prevY)) {
+                nextX = nx;
+                nextY = ny;
+                break;
               }
             }
-            angle = atan2(ry.toDouble(), rx.toDouble());
-          } else {
-            int gradX = 0;
-            int gradY = 0;
-            for (int wy = -4; wy <= 4; wy++) {
-              for (int wx = -4; wx <= 4; wx++) {
-                final nx = (x + wx).clamp(0, w - 1);
-                final ny = (y + wy).clamp(0, h - 1);
-                if (skeleton[ny * w + nx] == 1) {
-                  gradX += wx;
-                  gradY += wy;
-                }
-              }
-            }
-            angle = atan2(gradY.toDouble(), gradX.toDouble());
+            if (nextX == -1) break;
+            prevX = currX;
+            prevY = currY;
+            currX = nextX;
+            currY = nextY;
+            pathLen++;
           }
 
-          final double cx = w / 2.0;
-          final double cy = h / 2.0;
-          final double normDist =
-              sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
-          final double qual = (0.98 - normDist * 0.15).clamp(0.70, 0.98);
+          if (pathLen >= 3) {
+            final double angle = atan2((currY - y).toDouble(), (currX - x).toDouble());
+            final double cx = w / 2.0;
+            final double cy = h / 2.0;
+            final double normDist =
+                sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
+            final double qual = (0.98 - normDist * 0.15).clamp(0.75, 0.98);
 
-          candidates.add({
-            'x': x,
-            'y': y,
-            'direction': angle,
-            'type': type,
-            'confidence': qual,
-          });
+            rawCandidates.add({
+              'x': x,
+              'y': y,
+              'direction': angle,
+              'type': 'RIG',
+              'confidence': qual,
+            });
+          }
+        } else if (cn == 3 && neighborCount == 3) {
+          // ── RIDGE BIFURCATION (BIF) ───────────────────────────────
+          final List<Point<int>> branchNeighbors = [];
+          for (int i = 0; i < 8; i++) {
+            final nx = (x + dx[i]).clamp(0, w - 1);
+            final ny = (y + dy[i]).clamp(0, h - 1);
+            if (skeleton[ny * w + nx] == 1) {
+              branchNeighbors.add(Point(nx, ny));
+            }
+          }
+
+          if (branchNeighbors.length >= 3) {
+            final List<double> branchAngles = [];
+            int shortestBranch = 99;
+
+            for (final bn in branchNeighbors.take(3)) {
+              int currX = bn.x;
+              int currY = bn.y;
+              int prevX = x;
+              int prevY = y;
+              int bLen = 1;
+
+              for (int step = 2; step <= 8; step++) {
+                int nextX = -1;
+                int nextY = -1;
+                for (int i = 0; i < 8; i++) {
+                  final nx = (currX + dx[i]).clamp(0, w - 1);
+                  final ny = (currY + dy[i]).clamp(0, h - 1);
+                  if (skeleton[ny * w + nx] == 1 && !(nx == prevX && ny == prevY)) {
+                    nextX = nx;
+                    nextY = ny;
+                    break;
+                  }
+                }
+                if (nextX == -1) break;
+                prevX = currX;
+                prevY = currY;
+                currX = nextX;
+                currY = nextY;
+                bLen++;
+              }
+
+              if (bLen < shortestBranch) shortestBranch = bLen;
+              branchAngles.add(atan2((currY - y).toDouble(), (currX - x).toDouble()));
+            }
+
+            if (shortestBranch >= 3) {
+              double sumCos = 0.0;
+              double sumSin = 0.0;
+              for (final a in branchAngles) {
+                sumCos += cos(a);
+                sumSin += sin(a);
+              }
+              final double angle = atan2(sumSin, sumCos);
+
+              final double cx = w / 2.0;
+              final double cy = h / 2.0;
+              final double normDist =
+                  sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
+              final double qual = (0.98 - normDist * 0.15).clamp(0.75, 0.98);
+
+              rawCandidates.add({
+                'x': x,
+                'y': y,
+                'direction': angle,
+                'type': 'BIF',
+                'confidence': qual,
+              });
+            }
+          }
         }
       }
     }
 
-    // 4. Uniform Multi-Grid Spatial NMS
-    return _uniformSpatialNms(candidates, w, h, 45);
+    // 4. Filter Spurious Opposing Endings & Broken Ridges
+    final List<Map<String, dynamic>> filtered = _filterSpuriousMinutiae(rawCandidates);
+
+    // 5. Uniform Multi-Grid Spatial NMS (50 max points target)
+    return _uniformSpatialNms(filtered, w, h, 50);
+  }
+
+  static List<Map<String, dynamic>> _filterSpuriousMinutiae(
+    List<Map<String, dynamic>> candidates,
+  ) {
+    final List<bool> keep = List.filled(candidates.length, true);
+
+    for (int i = 0; i < candidates.length; i++) {
+      if (!keep[i]) continue;
+      final m1 = candidates[i];
+      final int x1 = m1['x'] as int;
+      final int y1 = m1['y'] as int;
+      final double dir1 = m1['direction'] as double;
+      final String type1 = m1['type'] as String;
+
+      for (int j = i + 1; j < candidates.length; j++) {
+        if (!keep[j]) continue;
+        final m2 = candidates[j];
+        final int x2 = m2['x'] as int;
+        final int y2 = m2['y'] as int;
+        final double dir2 = m2['direction'] as double;
+        final String type2 = m2['type'] as String;
+
+        final int dSq = (x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2);
+
+        // 1. Broken ridge artifact: two endings facing each other within 12px
+        if (dSq <= 144 && type1 == 'RIG' && type2 == 'RIG') {
+          double diffAngle = (dir1 - dir2).abs();
+          if (diffAngle > pi) diffAngle = (2 * pi - diffAngle);
+          if (diffAngle > pi * 0.65) {
+            keep[i] = false;
+            keep[j] = false;
+            break;
+          }
+        }
+
+        // 2. Overlapping duplicate minutiae within 8px
+        if (dSq <= 64) {
+          final double q1 = (m1['confidence'] as num?)?.toDouble() ?? 0.0;
+          final double q2 = (m2['confidence'] as num?)?.toDouble() ?? 0.0;
+          if (q1 >= q2) {
+            keep[j] = false;
+          } else {
+            keep[i] = false;
+            break;
+          }
+        }
+      }
+    }
+
+    final List<Map<String, dynamic>> result = [];
+    for (int i = 0; i < candidates.length; i++) {
+      if (keep[i]) result.add(candidates[i]);
+    }
+    return result;
   }
 
   static Uint8List _zhangSuenThinning(Uint8List img, int w, int h) {
@@ -746,7 +871,7 @@ class OnDevicePipelineService {
     candidates.sort((a, b) => ((b['confidence'] as num?) ?? 0)
         .compareTo((a['confidence'] as num?) ?? 0));
 
-    const int gridCols = 4;
+    const int gridCols = 5;
     const int gridRows = 5;
     final double cellW = w / gridCols;
     final double cellH = h / gridRows;
@@ -769,9 +894,9 @@ class OnDevicePipelineService {
       }
     }
 
-    final double minDistance = max(20.0, min(w, h) * 0.075);
+    final double minDistance = max(10.0, min(w, h) * 0.035);
     final double minDistSq = minDistance * minDistance;
-    const int maxPerBucket = 3;
+    const int maxPerBucket = 5;
     final List<List<int>> bucketCounts =
         List.generate(gridRows, (_) => List.filled(gridCols, 0));
 
@@ -825,7 +950,7 @@ class OnDevicePipelineService {
   }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // Visualization: crisp target rings + directional arrows
+  // Visualization: crisp target rings + directional flow vectors
   // ──────────────────────────────────────────────────────────────────────────
   static img.Image _drawMinutiaeVisualization(
     img.Image preproc,
@@ -834,16 +959,16 @@ class OnDevicePipelineService {
     final vis = img.Image.from(preproc);
     final double diag =
         sqrt(vis.width * vis.width + vis.height * vis.height);
-    final int centerDot = max(1, (diag * 0.0025).round());
-    final int outerRadius = max(3, (diag * 0.009).round());
-    final int arrowLen = max(8, (diag * 0.022).round());
+    final int centerDot = max(1, (diag * 0.003).round());
+    final int outerRadius = max(4, (diag * 0.010).round());
+    final int arrowLen = max(10, (diag * 0.024).round());
 
     for (final m in minutiae) {
       final int x = (m['x'] as num).toInt();
       final int y = (m['y'] as num).toInt();
       final double dir = (m['direction'] as num).toDouble();
       final bool isRig = m['type'] == 'RIG';
-      // Emerald Green for RIG (#00C853), Electric Blue for BIF (#0091EA)
+      // Emerald Green for RIG (#00C853), Electric Royal Blue for BIF (#0091EA)
       final color =
           isRig ? img.ColorRgb8(0, 200, 83) : img.ColorRgb8(0, 145, 234);
 
@@ -855,6 +980,17 @@ class OnDevicePipelineService {
       final int endX = x + (arrowLen * cos(dir)).round();
       final int endY = y + (arrowLen * sin(dir)).round();
       img.drawLine(vis, x1: x, y1: y, x2: endX, y2: endY, color: color);
+
+      // 4. Subtle directional pointer tip
+      final double tipAngle1 = dir + pi * 0.82;
+      final double tipAngle2 = dir - pi * 0.82;
+      final int tipLen = (arrowLen * 0.28).round();
+      final int tipX1 = endX + (tipLen * cos(tipAngle1)).round();
+      final int tipY1 = endY + (tipLen * sin(tipAngle1)).round();
+      final int tipX2 = endX + (tipLen * cos(tipAngle2)).round();
+      final int tipY2 = endY + (tipLen * sin(tipAngle2)).round();
+      img.drawLine(vis, x1: endX, y1: endY, x2: tipX1, y2: tipY1, color: color);
+      img.drawLine(vis, x1: endX, y1: endY, x2: tipX2, y2: tipY2, color: color);
     }
 
     return vis;

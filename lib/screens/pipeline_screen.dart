@@ -98,7 +98,12 @@ class _PipelineScreenState extends State<PipelineScreen> {
 
           // Error
           if (_result != null && _result!['success'] != true)
-            _errorCard(_result!['error'] ?? 'Unknown error'),
+            _errorCard(
+              _result!['error'] ??
+              _result!['guidance'] ??
+              _result!['message'] ??
+              'Quality check failed. Please recapture the fingerprint.',
+            ),
 
           // Results
           if (_result != null && _result!['success'] == true) ...[
@@ -514,42 +519,105 @@ class _PipelineScreenState extends State<PipelineScreen> {
       bif = count - rig;
     }
 
+    // Benchmark status
+    final bool isOptimal = count >= 25;
+    final bool isAcceptable = count >= 12;
+    final Color barColor = isOptimal
+        ? YS.green
+        : (isAcceptable ? const Color(0xFF0091EA) : YS.orange);
+    final String statusText = isOptimal
+        ? '✓ Optimal minutiae density ($count features) — UIDAI compliant'
+        : (isAcceptable
+            ? '✓ Sufficient minutiae ($count features) for 1:1 verification'
+            : '⚠ Low minutiae count ($count features) — minimum 12 required');
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: YS.card, borderRadius: BorderRadius.circular(18),
+        color: YS.card,
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(color: YS.stroke),
         boxShadow: YS.cardShadow,
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text('Minutiae Extraction', style: YS.label(15, w: FontWeight.w700)),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Minutiae Extraction', style: YS.label(15, w: FontWeight.w700)),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: isAcceptable ? YS.greenBg : YS.redBg,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                isOptimal ? 'EXCELLENT' : (isAcceptable ? 'PASSED' : 'LOW QUALITY'),
+                style: YS.label(9, color: isAcceptable ? YS.green : YS.red, w: FontWeight.w700),
+              ),
+            ),
+          ],
+        ),
         const SizedBox(height: 4),
-        Text('Ridge endings and bifurcations detected',
+        Text('ISO/IEC 19794-2 ridge endings & bifurcations extracted',
             style: YS.label(12, color: YS.inkLight)),
         const SizedBox(height: 16),
         Row(children: [
-          _mStat('$count', 'Total', YS.amber),
+          _mStat('$count', 'Total Points', YS.amber),
           const SizedBox(width: 12),
-          _mStat('$rig', 'Endings', YS.green),
+          _mStat('$rig', 'Ridge Endings', YS.green),
           const SizedBox(width: 12),
           _mStat('$bif', 'Bifurcations', YS.blue),
         ]),
+        const SizedBox(height: 16),
+        // Visual Legend
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: YS.cardAlt,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: YS.stroke.withValues(alpha: 0.5)),
+          ),
+          child: Row(
+            children: [
+              // Ending indicator
+              Container(
+                width: 10,
+                height: 10,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF00C853),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text('Ending (RIG)', style: YS.label(11, color: YS.inkMid, w: FontWeight.w600)),
+              const SizedBox(width: 16),
+              // Bifurcation indicator
+              Container(
+                width: 10,
+                height: 10,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF0091EA),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text('Bifurcation (BIF)', style: YS.label(11, color: YS.inkMid, w: FontWeight.w600)),
+            ],
+          ),
+        ),
         if (count > 0) ...[
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
             child: LinearProgressIndicator(
-              value: (count / 80).clamp(0.0, 1.0),
+              value: (count / 35.0).clamp(0.0, 1.0),
               minHeight: 8,
               backgroundColor: YS.stroke,
-              color: count >= 20 ? YS.green : YS.orange,
+              color: barColor,
             ),
           ),
           const SizedBox(height: 6),
-          Text(count >= 20
-              ? '✓ Sufficient minutiae for reliable matching'
-              : '⚠ Low minutiae count — retake for better results',
-              style: YS.label(11, color: count >= 20 ? YS.green : YS.orange)),
+          Text(statusText, style: YS.label(11, color: barColor, w: FontWeight.w600)),
         ],
       ]),
     );
