@@ -278,32 +278,42 @@ class FingerprintAuthSdk(private val context: Context) {
             }
             val isoCodes = if (isRight) listOf(2, 3, 4, 5) else listOf(10, 9, 8, 7)
 
-            // ── 1. Detect Fingers via YOLO (best_float32.tflite) ─────────────
+            // ── 1. Detect Fingers via YOLO + Precision Slot Geometry ─────────
             val yoloDets = tfliteEngine.detectFingers(bitmap, confThreshold = 0.12f, iouThreshold = 0.45f)
 
-            // Build crop rects for each finger
-            val cropRects = mutableListOf<Pair<IntArray, Double>>() // ( [x1, y1, x2, y2], conf )
+            val fingerW = w * 0.15f
+            val gap = w * 0.047f
+            val startX = (w - (4f * fingerW + 3f * gap)) / 2f
 
-            if (yoloDets.size >= 2) {
-                // Use direct YOLO detections (sorted left to right) — exact replica of backend detect_all_finger_boxes
-                for (d in yoloDets.take(4)) {
-                    val b = d.boundingBox
-                    val x1 = max(0, b.left.toInt())
-                    val y1 = max(0, b.top.toInt())
-                    val x2 = min(w, b.right.toInt())
-                    val y2 = min(h, b.bottom.toInt())
-                    if (x2 > x1 + 10 && y2 > y1 + 10) {
-                        cropRects.add(Pair(intArrayOf(x1, y1, x2, y2), d.confidence.toDouble()))
-                    }
+            // Build crop rects for ALL 4 fingers in left-to-right order
+            val cropRects = mutableListOf<Pair<IntArray, Double>>()
+
+            for (i in 0 until 4) {
+                val slotX1 = startX + i * (fingerW + gap) - fingerW * 0.18f
+                val slotX2 = slotX1 + fingerW * 1.36f
+
+                // Find YOLO box that aligns with this slot column
+                val matchingYolo = yoloDets.firstOrNull { d ->
+                    val cx = (d.boundingBox.left + d.boundingBox.right) / 2f
+                    cx in slotX1..slotX2
                 }
-            }
 
-            // Fallback: If YOLO detected < 2 fingers, use precision overlay slot geometry
-            if (cropRects.size < 2) {
-                cropRects.clear()
-                for (i in 0 until 4) {
-                    val rect = OpencvImageProcessor.detectSlotFingerCrop(bitmap, i, isRight)
-                    cropRects.add(Pair(rect, 0.95))
+                if (matchingYolo != null) {
+                    val b = matchingYolo.boundingBox
+                    val bw = b.width()
+                    val bh = b.height()
+                    val distalH = min(bh, bw * 1.45f)
+                    val x1 = max(0, (b.left - bw * 0.05f).toInt())
+                    val x2 = min(w, (b.right + bw * 0.05f).toInt())
+                    val y1 = max(0, (b.top - bw * 0.04f).toInt())
+                    val y2 = min(h, (b.top + distalH).toInt())
+
+                    val refined = OpencvImageProcessor.refineSkinApexCrop(bitmap, x1, y1, x2, y2)
+                    cropRects.add(Pair(refined, matchingYolo.confidence.toDouble()))
+                } else {
+                    // Fallback to dynamic skin apex crop for this slot
+                    val slotCrop = OpencvImageProcessor.detectSlotFingerCrop(bitmap, i, isRight)
+                    cropRects.add(Pair(slotCrop, 0.95))
                 }
             }
 
@@ -311,7 +321,7 @@ class FingerprintAuthSdk(private val context: Context) {
             val placedForComposite = mutableListOf<Pair<IntArray, Bitmap>>()
             var totalMinutiae = 0
 
-            val count = min(4, cropRects.size)
+            val count = 4
             for (i in 0 until count) {
                 val fStart = System.currentTimeMillis()
                 val pos = positions[min(i, positions.size - 1)]
