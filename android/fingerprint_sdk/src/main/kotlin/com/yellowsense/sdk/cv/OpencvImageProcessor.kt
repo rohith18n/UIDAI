@@ -208,8 +208,7 @@ object OpencvImageProcessor {
             val top = ((h * 0.24f).toInt()).coerceIn(0, h - ch)
             val safeW = cw.coerceIn(10, w - left)
             val safeH = ch.coerceIn(10, h - top)
-            val crop = Bitmap.createBitmap(bitmap, left, top, safeW, safeH)
-            return toSquareBitmap(crop)
+            return Bitmap.createBitmap(bitmap, left, top, safeW, safeH)
         }
 
         val tipWidth = max(20, maxX - minX)
@@ -224,8 +223,7 @@ object OpencvImageProcessor {
 
         val finalW = (cropX2 - cropX1).coerceIn(10, w - cropX1)
         val finalH = (cropY2 - cropY1).coerceIn(10, h - cropY1)
-        val crop = Bitmap.createBitmap(bitmap, cropX1, cropY1, finalW, finalH)
-        return toSquareBitmap(crop)
+        return Bitmap.createBitmap(bitmap, cropX1, cropY1, finalW, finalH)
     }
 
     /**
@@ -536,11 +534,27 @@ object OpencvImageProcessor {
             outPixels[i] = if (finalVal < 128) Color.rgb(20, 20, 20) else Color.WHITE
         }
 
-        val fir = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        fir.setPixels(outPixels, 0, w, 0, 0, w, h)
+        // ── Step 6: Auto-crop bottom content (matching backend preprocess_fingerprint)
+        var lastRowWithContent = h - 1
+        for (y in h - 1 downTo 0) {
+            var hasContent = false
+            for (x in 0 until w) {
+                if (outPixels[y * w + x] != Color.WHITE) {
+                    hasContent = true
+                    break
+                }
+            }
+            if (hasContent) {
+                lastRowWithContent = y
+                break
+            }
+        }
+        val pad = (h * 0.02f).toInt()
+        val finalH = min(h, lastRowWithContent + pad + 1).coerceAtLeast(10)
 
-        // Always format FIR to square
-        return toSquareBitmap(fir, Color.WHITE)
+        val fir = Bitmap.createBitmap(w, finalH, Bitmap.Config.ARGB_8888)
+        fir.setPixels(outPixels, 0, w, 0, 0, w, finalH)
+        return fir
     }
 
     /**

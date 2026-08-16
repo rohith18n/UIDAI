@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
 import org.tensorflow.lite.Interpreter
+import com.yellowsense.sdk.iso.MinutiaPoint
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -22,6 +23,7 @@ class TfliteInferenceEngine(private val context: Context) {
 
     private var u2netInterpreter: Interpreter? = null
     private var yoloInterpreter: Interpreter? = null
+    private var minutiaeInterpreter: Interpreter? = null
     private var isInitialized = false
 
     data class DetectionBox(
@@ -55,6 +57,10 @@ class TfliteInferenceEngine(private val context: Context) {
             val yoloBuffer = loadModelFile("best_float32.tflite")
             if (yoloBuffer != null) {
                 yoloInterpreter = Interpreter(yoloBuffer, options)
+            }
+            val minutiaeBuffer = loadModelFile("minutiae_net.tflite")
+            if (minutiaeBuffer != null) {
+                minutiaeInterpreter = Interpreter(minutiaeBuffer, options)
             }
             isInitialized = true
         } catch (e: Exception) {
@@ -101,62 +107,103 @@ class TfliteInferenceEngine(private val context: Context) {
                 inputBuffer.putFloat((color and 0xFF) / 255.0f)
             }
 
-            // 2. Run inference: Output shape is [1, 8, 13125]
-            val outputBuffer = ByteBuffer.allocateDirect(1 * 8 * 13125 * 4).apply {
+            // 2. Read output tensor shape and allocate buffer
+            val outTensor = yolo.getOutputTensor(0)
+            val shape = outTensor.shape() // e.g. [1, 8, 13125] or [1, 13125, 8]
+            val totalElements = outTensor.numElements()
+            val outputBuffer = ByteBuffer.allocateDirect(totalElements * 4).apply {
                 order(ByteOrder.nativeOrder())
             }
             yolo.run(inputBuffer, outputBuffer)
             outputBuffer.rewind()
 
-            // 3. Read output tensor: 8 rows x 13125 columns
-            // row 0: cx, row 1: cy, row 2: w, row 3: h
-            // rows 4..7: class scores (0: FingerTips, 1: FingerTips-2DFX, 2: Fingerprint, 3: finger)
             val classNames = arrayOf("FingerTips", "FingerTips-2DFX", "Fingerprint", "finger")
-            val numCols = 13125
-            val out = Array(8) { FloatArray(numCols) }
-            for (row in 0 until 8) {
-                for (col in 0 until numCols) {
-                    out[row][col] = outputBuffer.float
-                }
-            }
-
             val rawDets = mutableListOf<DetectionBox>()
             val scaleX = origW / 800.0f
             val scaleY = origH / 800.0f
-            val minArea = (origW * origH) * 0.002f
+            val minArea = (origW * origH) * 0.001f
 
-            for (col in 0 until numCols) {
-                val cx = out[0][col]
-                val cy = out[1][col]
-                val bw = out[2][col]
-                val bh = out[3][col]
+            val isLayoutAnchorsFirst = (shape.size == 3 && shape[1] > shape[2]) // [1, 13125, 8]
+            val numAnchors = if (shape.size == 3) (if (isLayoutAnchorsFirst) shape[1] else shape[2]) else 13125
+            val numAttrs = if (shape.size == 3) (if (isLayoutAnchorsFirst) shape[2] else shape[1]) else 8
 
-                // Find max class score
-                var maxScore = 0.0f
-                var bestCls = 0
-                for (cls in 0 until 4) {
-                    val score = out[4 + cls][col]
-                    if (score > maxScore) {
-                        maxScore = score
-                        bestCls = cls
+            if (isLayoutAnchorsFirst) {
+                // Layout [1, numAnchors, numAttrs] — contiguous per anchor
+                for (a in 0 until numAnchors) {
+                    val cx = outputBuffer.float
+                    val cy = outputBuffer.float
+                    val bw = outputBuffer.float
+                    val bh = outputBuffer.float
+
+                    var maxScore = 0.0f
+                    var bestCls = 0
+                    for (c in 0 until (numAttrs - 4)) {
+                        val s = outputBuffer.float
+                        if (s > maxScore) {
+                            maxScore = s
+                            bestCls = c.coerceIn(0, classNames.size - 1)
+                        }
+                    }
+
+                    if (maxScore >= confThreshold) {
+                        val x1 = max(0f, (cx - bw / 2.0f) * scaleX)
+                        val y1 = max(0f, (cy - bh / 2.0f) * scaleY)
+                        val x2 = min(origW.toFloat(), (cx + bw / 2.0f) * scaleX)
+                        val y2 = min(origH.toFloat(), (cy + bh / 2.0f) * scaleY)
+
+                        if ((x2 - x1) * (y2 - y1) >= minArea) {
+                            rawDets.add(
+                                DetectionBox(
+                                    boundingBox = RectF(x1, y1, x2, y2),
+                                    confidence = maxScore,
+                                    classId = bestCls,
+                                    className = classNames[bestCls]
+                                )
+                            )
+                        }
+                    }
+                }
+            } else {
+                // Layout [1, numAttrs, numAnchors] — contiguous per attribute row
+                val out = Array(numAttrs) { FloatArray(numAnchors) }
+                for (r in 0 until numAttrs) {
+                    for (a in 0 until numAnchors) {
+                        out[r][a] = outputBuffer.float
                     }
                 }
 
-                if (maxScore >= confThreshold) {
-                    val x1 = max(0f, (cx - bw / 2.0f) * scaleX)
-                    val y1 = max(0f, (cy - bh / 2.0f) * scaleY)
-                    val x2 = min(origW.toFloat(), (cx + bw / 2.0f) * scaleX)
-                    val y2 = min(origH.toFloat(), (cy + bh / 2.0f) * scaleY)
+                for (a in 0 until numAnchors) {
+                    val cx = out[0][a]
+                    val cy = out[1][a]
+                    val bw = out[2][a]
+                    val bh = out[3][a]
 
-                    if ((x2 - x1) * (y2 - y1) >= minArea) {
-                        rawDets.add(
-                            DetectionBox(
-                                boundingBox = RectF(x1, y1, x2, y2),
-                                confidence = maxScore,
-                                classId = bestCls,
-                                className = classNames[bestCls]
+                    var maxScore = 0.0f
+                    var bestCls = 0
+                    for (c in 0 until (numAttrs - 4)) {
+                        val s = out[4 + c][a]
+                        if (s > maxScore) {
+                            maxScore = s
+                            bestCls = c.coerceIn(0, classNames.size - 1)
+                        }
+                    }
+
+                    if (maxScore >= confThreshold) {
+                        val x1 = max(0f, (cx - bw / 2.0f) * scaleX)
+                        val y1 = max(0f, (cy - bh / 2.0f) * scaleY)
+                        val x2 = min(origW.toFloat(), (cx + bw / 2.0f) * scaleX)
+                        val y2 = min(origH.toFloat(), (cy + bh / 2.0f) * scaleY)
+
+                        if ((x2 - x1) * (y2 - y1) >= minArea) {
+                            rawDets.add(
+                                DetectionBox(
+                                    boundingBox = RectF(x1, y1, x2, y2),
+                                    confidence = maxScore,
+                                    classId = bestCls,
+                                    className = classNames[bestCls]
+                                )
                             )
-                        )
+                        }
                     }
                 }
             }
@@ -379,8 +426,132 @@ class TfliteInferenceEngine(private val context: Context) {
         return LivenessResult(isLive = score >= 0.45f, liveScore = score, spoofScore = 1.0f - score)
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // MINUTIAENET ON-DEVICE NEURAL MINUTIAE EXTRACTION (best_f1.pth -> TFLite)
+    // ─────────────────────────────────────────────────────────────────────────
+    fun extractMinutiaeNet(
+        bitmap: Bitmap,
+        threshold: Float = 0.28f,
+        nmsSize: Int = 5
+    ): List<MinutiaPoint> {
+        val interpreter = minutiaeInterpreter ?: return emptyList()
+        val origW = bitmap.width
+        val origH = bitmap.height
+
+        try {
+            // 1. Resize to 256x256 grayscale float buffer [1, 256, 256, 1] normalized [0, 1]
+            val resized = Bitmap.createScaledBitmap(bitmap, 256, 256, true)
+            val inputBuffer = ByteBuffer.allocateDirect(1 * 256 * 256 * 1 * 4).apply {
+                order(ByteOrder.nativeOrder())
+            }
+
+            val pixels = IntArray(256 * 256)
+            resized.getPixels(pixels, 0, 256, 0, 0, 256, 256)
+
+            for (color in pixels) {
+                val r = (color shr 16) and 0xFF
+                val g = (color shr 8) and 0xFF
+                val b = color and 0xFF
+                val gray = (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f
+                inputBuffer.putFloat(gray)
+            }
+            inputBuffer.rewind()
+
+            // 2. Prepare 4 output head arrays matching MinutiaeNet [1, 64, 64, 1]
+            val locOut = Array(1) { Array(64) { Array(64) { FloatArray(1) } } }
+            val cosOut = Array(1) { Array(64) { Array(64) { FloatArray(1) } } }
+            val sinOut = Array(1) { Array(64) { Array(64) { FloatArray(1) } } }
+            val typOut = Array(1) { Array(64) { Array(64) { FloatArray(1) } } }
+
+            val outputs = mapOf(
+                0 to locOut,
+                1 to cosOut,
+                2 to sinOut,
+                3 to typOut
+            )
+
+            interpreter.runForMultipleInputsOutputs(arrayOf(inputBuffer), outputs)
+
+            // 3. Local Maximum Peak Detection (NMS) with Dark Ridge Presence Filter
+            val minutiae = mutableListOf<MinutiaPoint>()
+            val nmsRadius = nmsSize / 2
+            val sx = origW.toDouble() / 64.0
+            val sy = origH.toDouble() / 64.0
+
+            val origPixels = IntArray(origW * origH)
+            bitmap.getPixels(origPixels, 0, origW, 0, 0, origW, origH)
+
+            for (y in 2 until 62) {
+                for (x in 2 until 62) {
+                    val score = locOut[0][y][x][0]
+                    if (score < threshold) continue
+
+                    var isMax = true
+                    for (dy in -nmsRadius..nmsRadius) {
+                        for (dx in -nmsRadius..nmsRadius) {
+                            if (dy == 0 && dx == 0) continue
+                            val ny = (y + dy).coerceIn(0, 63)
+                            val nx = (x + dx).coerceIn(0, 63)
+                            if (locOut[0][ny][nx][0] > score) {
+                                isMax = false
+                                break
+                            }
+                        }
+                        if (!isMax) break
+                    }
+
+                    if (isMax) {
+                        val px = ((x + 0.5) * sx).toInt().coerceIn(0, origW - 1)
+                        val py = ((y + 0.5) * sy).toInt().coerceIn(0, origH - 1)
+
+                        // Strict Ridge Presence Verification: Minutiae cannot exist on pure white background
+                        var hasDarkRidge = false
+                        val checkR = 5
+                        for (cy in -checkR..checkR) {
+                            for (cx in -checkR..checkR) {
+                                val nx = (px + cx).coerceIn(0, origW - 1)
+                                val ny = (py + cy).coerceIn(0, origH - 1)
+                                val p = origPixels[ny * origW + nx]
+                                val r = (p shr 16) and 0xFF
+                                val g = (p shr 8) and 0xFF
+                                val b = p and 0xFF
+                                if ((0.299 * r + 0.587 * g + 0.114 * b) < 135.0) {
+                                    hasDarkRidge = true
+                                    break
+                                }
+                            }
+                            if (hasDarkRidge) break
+                        }
+                        if (!hasDarkRidge) continue // Reject ghost points in empty white space
+
+                        val cosVal = cosOut[0][y][x][0]
+                        val sinVal = sinOut[0][y][x][0]
+                        val typVal = typOut[0][y][x][0]
+                        val angle = kotlin.math.atan2(sinVal.toDouble(), cosVal.toDouble())
+                        val typeStr = if (typVal > 0.5f) "BIF" else "RIG"
+
+                        minutiae.add(
+                            MinutiaPoint(
+                                x = px,
+                                y = py,
+                                direction = angle,
+                                type = typeStr,
+                                quality = score.toDouble()
+                            )
+                        )
+                    }
+                }
+            }
+
+            return minutiae
+        } catch (e: Exception) {
+            return emptyList()
+        }
+    }
+
     fun close() {
         u2netInterpreter?.close()
         yoloInterpreter?.close()
+        minutiaeInterpreter?.close()
     }
 }

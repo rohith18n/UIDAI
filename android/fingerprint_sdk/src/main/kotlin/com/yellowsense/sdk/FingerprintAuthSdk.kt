@@ -16,8 +16,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 
 /**
  * On-Device Fingerprint Authentication & Slap Processing SDK.
@@ -159,7 +161,7 @@ class FingerprintAuthSdk(private val context: Context) {
             // Stage 4: Liveness Verification
             val liveness = tfliteEngine.evaluateLiveness(croppedBitmap)
 
-            // Stage 5: Minutiae Feature Extraction
+            // Stage 5: Minutiae Feature Extraction (Morphological Skeleton Crossing-Number)
             val minutiaeList = MinutiaeExtractor.extractMinutiae(preprocessedBitmap, croppedBitmap, maxPoints = 45)
 
             // Stage 6: ISO/IEC 19794-2 Template Serialization
@@ -283,29 +285,34 @@ class FingerprintAuthSdk(private val context: Context) {
             val cropRects = mutableListOf<Pair<IntArray, Double>>() // ( [x1, y1, x2, y2], conf )
 
             if (yoloDets.size >= 2) {
-                // Use YOLO detections (sorted left to right) — crop ONLY distal phalanx pad anchored at apex
+                // Use direct YOLO detections (sorted left to right) — exact replica of backend detect_all_finger_boxes
                 for (d in yoloDets.take(4)) {
                     val b = d.boundingBox
-                    val bw = b.width()
-                    val bh = b.height()
-                    val distalH = min(bh, bw * 1.25f)
-                    val padX = (bw * 0.05f).toInt()
-                    val padY = (distalH * 0.04f).toInt()
-                    val x1 = max(0, b.left.toInt() - padX)
-                    val y1 = max(0, b.top.toInt() - padY)
-                    val x2 = min(w, b.right.toInt() + padX)
-                    val y2 = min(h, b.top.toInt() + distalH.toInt() + padY)
-                    val refined = OpencvImageProcessor.refineSkinApexCrop(bitmap, x1, y1, x2, y2)
-                    cropRects.add(Pair(refined, d.confidence.toDouble()))
+                    val x1 = max(0, b.left.toInt())
+                    val y1 = max(0, b.top.toInt())
+                    val x2 = min(w, b.right.toInt())
+                    val y2 = min(h, b.bottom.toInt())
+                    if (x2 > x1 + 10 && y2 > y1 + 10) {
+                        cropRects.add(Pair(intArrayOf(x1, y1, x2, y2), d.confidence.toDouble()))
+                    }
                 }
             }
 
-            // Fallback: If YOLO detected < 2 fingers, use skin-adaptive slot localization
+            // Fallback: If YOLO detected < 2 fingers, use exact partition_slap_slots geometry from backend
             if (cropRects.size < 2) {
                 cropRects.clear()
+                val slotW = (w * 0.15f).toInt()
+                val gap = (w * 0.047f).toInt()
+                val startX = (w * 0.12f).toInt()
+                val topY = (h * 0.12f).toInt()
+                val slotH = (h * 0.55f).toInt()
+
                 for (i in 0 until 4) {
-                    val rect = OpencvImageProcessor.detectSlotFingerCrop(bitmap, i, isRight)
-                    cropRects.add(Pair(rect, 0.95))
+                    val x1 = (startX + i * (slotW + gap)).coerceIn(0, w - 1)
+                    val x2 = (x1 + slotW).coerceIn(x1 + 1, w)
+                    val y1 = topY.coerceIn(0, h - 1)
+                    val y2 = (topY + slotH).coerceIn(y1 + 1, h)
+                    cropRects.add(Pair(intArrayOf(x1, y1, x2, y2), 0.95))
                 }
             }
 
@@ -323,8 +330,7 @@ class FingerprintAuthSdk(private val context: Context) {
 
                 val cropW = max(10, x2 - x1)
                 val cropH = max(10, y2 - y1)
-                val rawCropped = Bitmap.createBitmap(bitmap, x1, y1, cropW, cropH)
-                val cropped = OpencvImageProcessor.toSquareBitmap(rawCropped, Color.WHITE)
+                val cropped = Bitmap.createBitmap(bitmap, x1, y1, cropW, cropH)
 
                 val neuralMask = tfliteEngine.segmentFingertip(cropped)
                 val preproc = OpencvImageProcessor.createContactEquivalentFIR(cropped, neuralMask)
@@ -359,29 +365,24 @@ class FingerprintAuthSdk(private val context: Context) {
                 )
             }
 
-            // ── 2. Build Composite Canvas (4 fingers stitched side-by-side with padding) ─
-            val targetFingerH = 260
-            val scaledPreprocs = placedForComposite.map { (_, pre) ->
-                if (pre.height == targetFingerH) pre
-                else {
-                    val newW = max(1, (pre.width.toFloat() * targetFingerH / pre.height).toInt())
-                    Bitmap.createScaledBitmap(pre, newW, targetFingerH, true)
-                }
-            }
+            // ── 2. Build Composite Canvas (exact replica of backend build_composite) ─
+            val compScale = if (maxDim > 1080) 1080f / maxDim else 1.0f
+            val compW = (w * compScale).toInt().coerceAtLeast(100)
+            val compH = (h * compScale).toInt().coerceAtLeast(100)
 
-            val pad = 24
-            val gap = 16
-            val totalCompW = scaledPreprocs.sumOf { it.width } + gap * max(0, scaledPreprocs.size - 1) + pad * 2
-            val totalCompH = targetFingerH + pad * 2
-
-            val composite = Bitmap.createBitmap(totalCompW, totalCompH, Bitmap.Config.ARGB_8888)
+            val composite = Bitmap.createBitmap(compW, compH, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(composite)
             canvas.drawColor(Color.WHITE)
 
-            var curX = pad
-            for (pre in scaledPreprocs) {
-                canvas.drawBitmap(pre, curX.toFloat(), pad.toFloat(), null)
-                curX += pre.width + gap
+            for ((rect, pre) in placedForComposite) {
+                val (rx1, ry1, rx2, ry2) = rect
+                val px1 = (rx1 * compScale).toInt().coerceIn(0, compW - 1)
+                val py1 = (ry1 * compScale).toInt().coerceIn(0, compH - 1)
+                val targetW = max(1, ((rx2 - rx1) * compScale).toInt())
+                val targetH = max(1, (pre.height.toFloat() * targetW / pre.width).toInt())
+
+                val resizedPre = Bitmap.createScaledBitmap(pre, targetW, targetH, true)
+                canvas.drawBitmap(resizedPre, px1.toFloat(), py1.toFloat(), null)
             }
 
             val compositeB64 = OpencvImageProcessor.bitmapToBase64(composite, 85)
@@ -413,10 +414,14 @@ class FingerprintAuthSdk(private val context: Context) {
     /**
      * Performs 1:1 on-device verification matching between two minutiae sets.
      */
+    /**
+     * Executes 1:1 Minutiae Verification using rotation & translation invariant alignment
+     * matching backend match_templates().
+     */
     suspend fun verifyOffline(
         minutiae1: List<MinutiaPoint>,
         minutiae2: List<MinutiaPoint>,
-        threshold: Double = 0.25
+        threshold: Double = 0.22
     ): VerifyResult = withContext(Dispatchers.Default) {
         val startTime = System.currentTimeMillis()
         if (minutiae1.isEmpty() || minutiae2.isEmpty()) {
@@ -429,37 +434,82 @@ class FingerprintAuthSdk(private val context: Context) {
             )
         }
 
-        var matchCount = 0
-        val maxDistSq = 25.0 * 25.0
+        // 1. Centroid normalization
+        val mx1 = minutiae1.sumOf { it.x } / minutiae1.size.toDouble()
+        val my1 = minutiae1.sumOf { it.y } / minutiae1.size.toDouble()
+        val mx2 = minutiae2.sumOf { it.x } / minutiae2.size.toDouble()
+        val my2 = minutiae2.sumOf { it.y } / minutiae2.size.toDouble()
 
-        for (m1 in minutiae1) {
-            for (m2 in minutiae2) {
-                if (m1.type == m2.type) {
-                    val dx = (m1.x - m2.x).toDouble()
-                    val dy = (m1.y - m2.y).toDouble()
-                    val distSq = dx * dx + dy * dy
-                    if (distSq <= maxDistSq) {
-                        val angleDiff = abs(m1.direction - m2.direction) % (2 * Math.PI)
-                        val circDiff = min(angleDiff, 2 * Math.PI - angleDiff)
-                        if (circDiff <= 0.60) {
-                            matchCount++
-                            break
+        data class CenteredM(val x: Double, val y: Double, val dir: Double, val type: String)
+
+        val p1 = minutiae1.map { CenteredM(it.x - mx1, it.y - my1, it.direction, it.type) }
+        val p2 = minutiae2.map { CenteredM(it.x - mx2, it.y - my2, it.direction, it.type) }
+
+        var bestMatches = 0
+        val distThresh = 35.0
+        val distThreshSq = distThresh * distThresh
+        val dirThresh = Math.toRadians(40.0)
+
+        // Search rotation angles between -35° and +35° in 5° steps (same as backend)
+        for (deg in -35..35 step 5) {
+            val rot = Math.toRadians(deg.toDouble())
+            val cosR = cos(rot)
+            val sinR = sin(rot)
+
+            val rotatedP1 = p1.map {
+                CenteredM(
+                    x = it.x * cosR - it.y * sinR,
+                    y = it.x * sinR + it.y * cosR,
+                    dir = (it.dir + rot + Math.PI) % (2 * Math.PI) - Math.PI,
+                    type = it.type
+                )
+            }
+
+            val usedJ = mutableSetOf<Int>()
+            var matched = 0
+
+            for (m1 in rotatedP1) {
+                var bestD = distThreshSq + 1.0
+                var bestJ = -1
+
+                for (j in p2.indices) {
+                    if (j in usedJ) continue
+                    val m2 = p2[j]
+                    val dx = m1.x - m2.x
+                    val dy = m1.y - m2.y
+                    val dSq = dx * dx + dy * dy
+
+                    if (dSq <= distThreshSq && dSq < bestD) {
+                        var angDiff = abs((m1.dir - m2.dir + Math.PI) % (2 * Math.PI) - Math.PI)
+                        if (angDiff > Math.PI) angDiff = 2 * Math.PI - angDiff
+                        if (angDiff < dirThresh) {
+                            bestD = dSq
+                            bestJ = j
                         }
                     }
                 }
+
+                if (bestJ != -1) {
+                    usedJ.add(bestJ)
+                    matched++
+                }
+            }
+
+            if (matched > bestMatches) {
+                bestMatches = matched
             }
         }
 
         val denom = max(minutiae1.size, minutiae2.size).toDouble()
-        val score = if (denom > 0) (matchCount / denom).coerceIn(0.0, 1.0) else 0.0
+        val score = if (denom > 0) (bestMatches / denom).coerceIn(0.0, 1.0) else 0.0
         val matched = score >= threshold
 
         VerifyResult(
             matched = matched,
             confidenceScore = score,
-            matchCount = matchCount,
+            matchCount = bestMatches,
             executionTimeMs = System.currentTimeMillis() - startTime,
-            message = if (matched) "Identity verified successfully" else "Fingerprints did not match"
+            message = if (matched) "Identity verified successfully ($bestMatches matching minutiae)" else "Fingerprints did not match ($bestMatches matching minutiae)"
         )
     }
 

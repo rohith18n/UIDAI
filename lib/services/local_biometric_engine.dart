@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:developer' as dev;
 import 'dart:io';
 import 'dart:math';
+import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -76,7 +77,7 @@ class LocalBiometricEngine {
       final List<Map<String, dynamic>> fingerResults = [];
       final int numFingers = 4;
 
-      final List<img.Image> preprocFingers = [];
+      final List<MapEntry<Rect, img.Image>> placedForComposite = [];
       int totalMinutiae = 0;
 
       final topFractions = hand.toLowerCase().contains('left')
@@ -86,9 +87,6 @@ class LocalBiometricEngine {
       for (int i = 0; i < numFingers; i++) {
         final pos = positions[i];
 
-        // Slot boundaries EXACTLY matching _SlapOverlayPainter geometry:
-        // fingerW = w*15%, gap = w*4.7%
-        // startX = (w - (4*fingerW + 3*gap)) / 2 = w*12.95%
         final double fingerW = w * 0.15;
         final double gap = w * 0.047;
         final double startX = (w - (4 * fingerW + 3 * gap)) / 2;
@@ -110,19 +108,8 @@ class LocalBiometricEngine {
           height: cropH,
         );
 
-        // Format to square
-        final int maxDim = max(rawCrop.width, rawCrop.height);
-        final fingerCrop = img.Image(width: maxDim, height: maxDim);
-        img.fill(fingerCrop, color: img.ColorRgb8(255, 255, 255));
-        img.compositeImage(
-          fingerCrop,
-          rawCrop,
-          dstX: ((maxDim - rawCrop.width) / 2).round(),
-          dstY: ((maxDim - rawCrop.height) / 2).round(),
-        );
-
         final singleRes = await OnDevicePipelineService.processBytesLocally(
-          Uint8List.fromList(img.encodeJpg(fingerCrop, quality: 85)),
+          Uint8List.fromList(img.encodeJpg(rawCrop, quality: 85)),
         );
 
         final mCount = (singleRes['minutiae_count'] as num?)?.toInt() ?? 
@@ -147,13 +134,23 @@ class LocalBiometricEngine {
           final preprocBytes = base64Decode(pB64);
           final preprocDecoded = img.decodeImage(preprocBytes);
           if (preprocDecoded != null) {
-            preprocFingers.add(preprocDecoded);
+            placedForComposite.add(
+              MapEntry(
+                Rect.fromLTWH(
+                  cropX.toDouble(),
+                  cropY.toDouble(),
+                  cropW.toDouble(),
+                  cropH.toDouble(),
+                ),
+                preprocDecoded,
+              ),
+            );
           }
         }
       }
 
-      // Build Composite Slap Canvas
-      final compositeImg = _buildCompositeCanvas(preprocFingers, w, h);
+      // Build Composite Slap Canvas matching backend build_composite()
+      final compositeImg = _buildCompositeCanvas(placedForComposite, w, h);
       final String compositeB64 = base64Encode(img.encodeJpg(compositeImg, quality: 85));
 
       sw.stop();
@@ -599,78 +596,130 @@ class LocalBiometricEngine {
 
   // ── 5. HELPER ALGORITHMS: MINUTIAE MATCHING & CANVAS BUILDER ───────────────
 
-  /// Bozorth3 / Euclidean Spatial Minutiae Matching Algorithm
+  /// Robust rotation & translation invariant minutiae matching matching backend match_templates()
   static double _matchMinutiae(List query, List enrolled) {
     if (query.isEmpty || enrolled.isEmpty) return 0.0;
+    if (query.length < 4 || enrolled.length < 4) return 0.0;
 
-    int matchedCount = 0;
-    final double distThreshSq = 35.0 * 35.0; // 35 px distance tolerance
-    final double angleThresh = 0.65; // ~37 degrees orientation tolerance
+    final qList = query.whereType<Map>().toList();
+    final eList = enrolled.whereType<Map>().toList();
+    if (qList.isEmpty || eList.isEmpty) return 0.0;
 
-    final Set<int> usedEnrolled = {};
+    // 1. Centroid normalization
+    double qSumX = 0, qSumY = 0;
+    for (final m in qList) {
+      qSumX += (m['x'] as num).toDouble();
+      qSumY += (m['y'] as num).toDouble();
+    }
+    final double mx1 = qSumX / qList.length;
+    final double my1 = qSumY / qList.length;
 
-    for (final q in query) {
-      if (q is! Map) continue;
-      final double qx = (q['x'] as num).toDouble();
-      final double qy = (q['y'] as num).toDouble();
-      final double qDir = (q['direction'] as num).toDouble();
+    double eSumX = 0, eSumY = 0;
+    for (final m in eList) {
+      eSumX += (m['x'] as num).toDouble();
+      eSumY += (m['y'] as num).toDouble();
+    }
+    final double mx2 = eSumX / eList.length;
+    final double my2 = eSumY / eList.length;
 
-      for (int i = 0; i < enrolled.length; i++) {
-        if (usedEnrolled.contains(i)) continue;
-        final e = enrolled[i];
-        if (e is! Map) continue;
+    final p1 = qList.map((m) => {
+      'x': (m['x'] as num).toDouble() - mx1,
+      'y': (m['y'] as num).toDouble() - my1,
+      'dir': (m['direction'] as num).toDouble(),
+    }).toList();
 
-        final double ex = (e['x'] as num).toDouble();
-        final double ey = (e['y'] as num).toDouble();
-        final double dx = qx - ex;
-        final double dy = qy - ey;
+    final p2 = eList.map((m) => {
+      'x': (m['x'] as num).toDouble() - mx2,
+      'y': (m['y'] as num).toDouble() - my2,
+      'dir': (m['direction'] as num).toDouble(),
+    }).toList();
 
-        if ((dx * dx + dy * dy) <= distThreshSq) {
-          final double eDir = (e['direction'] as num).toDouble();
-          final double angleDiff = (qDir - eDir).abs();
-          if (angleDiff <= angleThresh || (2 * pi - angleDiff) <= angleThresh) {
-            matchedCount++;
-            usedEnrolled.add(i);
-            break;
+    int bestMatches = 0;
+    const double distThreshSq = 35.0 * 35.0;
+    const double dirThresh = 40.0 * pi / 180.0;
+
+    // Multi-angle rotation search from -35° to +35° in 5° steps
+    for (int deg = -35; deg <= 35; deg += 5) {
+      final double rot = deg * pi / 180.0;
+      final double cosR = cos(rot);
+      final double sinR = sin(rot);
+
+      final rotatedP1 = p1.map((m) => {
+        'x': m['x']! * cosR - m['y']! * sinR,
+        'y': m['x']! * sinR + m['y']! * cosR,
+        'dir': (m['dir']! + rot + pi) % (2 * pi) - pi,
+      }).toList();
+
+      final Set<int> usedJ = {};
+      int matched = 0;
+
+      for (final m1 in rotatedP1) {
+        double bestD = distThreshSq + 1.0;
+        int bestJ = -1;
+
+        for (int j = 0; j < p2.length; j++) {
+          if (usedJ.contains(j)) continue;
+          final m2 = p2[j];
+          final double dx = m1['x']! - m2['x']!;
+          final double dy = m1['y']! - m2['y']!;
+          final double dSq = dx * dx + dy * dy;
+
+          if (dSq <= distThreshSq && dSq < bestD) {
+            double angDiff = ((m1['dir']! - m2['dir']!) + pi) % (2 * pi) - pi;
+            angDiff = angDiff.abs();
+            if (angDiff > pi) angDiff = 2 * pi - angDiff;
+            if (angDiff < dirThresh) {
+              bestD = dSq;
+              bestJ = j;
+            }
           }
         }
+
+        if (bestJ != -1) {
+          usedJ.add(bestJ);
+          matched++;
+        }
+      }
+
+      if (matched > bestMatches) {
+        bestMatches = matched;
       }
     }
 
-    final double totalPossible = (query.length + enrolled.length) / 2.0;
-    return (matchedCount / max(1.0, totalPossible)).clamp(0.0, 1.0);
+    final double denom = max(qList.length, eList.length).toDouble();
+    return denom > 0 ? (bestMatches / denom).clamp(0.0, 1.0) : 0.0;
   }
 
-  /// Builds stitched white composite canvas for slap fingers (side-by-side with padding)
-  static img.Image _buildCompositeCanvas(List<img.Image> fingers, int w, int h) {
-    if (fingers.isEmpty) {
+  /// Builds full-canvas composite for slap fingers matching backend build_composite()
+  static img.Image _buildCompositeCanvas(
+    List<MapEntry<Rect, img.Image>> placed,
+    int w,
+    int h,
+  ) {
+    if (placed.isEmpty) {
       final blank = img.Image(width: 400, height: 200);
       img.fill(blank, color: img.ColorRgb8(255, 255, 255));
       return blank;
     }
 
-    const int targetFingerH = 260;
-    final List<img.Image> scaledFingers = fingers.map((f) {
-      if (f.height == targetFingerH) return f;
-      final int newW = max(1, (f.width * targetFingerH / f.height).round());
-      return img.copyResize(f, width: newW, height: targetFingerH);
-    }).toList();
+    final double maxDim = max(w, h).toDouble();
+    final double scale = maxDim > 1080 ? 1080.0 / maxDim : 1.0;
+    final int compW = (w * scale).round().clamp(100, 1920);
+    final int compH = (h * scale).round().clamp(100, 1920);
 
-    const int padding = 24;
-    const int gap = 16;
-    final int extraGap = scaledFingers.length > 1 ? gap * (scaledFingers.length - 1) : 0;
-    final int totalW = scaledFingers.fold<int>(0, (prev, f) => prev + f.width) +
-        extraGap +
-        padding * 2;
-    final int totalH = targetFingerH + padding * 2;
-
-    final composite = img.Image(width: totalW, height: totalH);
+    final composite = img.Image(width: compW, height: compH);
     img.fill(composite, color: img.ColorRgb8(255, 255, 255));
 
-    int curX = padding;
-    for (final f in scaledFingers) {
-      img.compositeImage(composite, f, dstX: curX, dstY: padding);
-      curX += f.width + gap;
+    for (final entry in placed) {
+      final rect = entry.key;
+      final pre = entry.value;
+      final int px = (rect.left * scale).round().clamp(0, compW - 1);
+      final int py = (rect.top * scale).round().clamp(0, compH - 1);
+      final int targetW = max(1, (rect.width * scale).round());
+      final int targetH = max(1, (pre.height * targetW / pre.width).round());
+
+      final resizedPre = img.copyResize(pre, width: targetW, height: targetH);
+      img.compositeImage(composite, resizedPre, dstX: px, dstY: py);
     }
 
     return composite;

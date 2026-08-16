@@ -161,7 +161,7 @@ class OnDevicePipelineService {
     final preprocJpg = img.encodeJpg(preprocImg, quality: 85);
     final String preprocessedB64 = base64Encode(preprocJpg);
 
-    // Stage 4: Minutiae Feature Extraction (Rutovitz Crossing Number)
+    // Stage 4: Minutiae Feature Extraction (Morphological Crossing Number fallback)
     final minutiaeList = _extractMinutiae(preprocImg, croppedImg);
     final visImg = _drawMinutiaeVisualization(preprocImg, minutiaeList);
     final visJpg = img.encodeJpg(visImg, quality: 85);

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer' as dev;
 import 'dart:ui';
 import 'package:flutter/material.dart';
@@ -7,6 +8,7 @@ import 'theme/app_theme.dart';
 import 'router.dart';
 import 'screens/splash_screen.dart';
 import 'services/api_service.dart';
+import 'services/ondevice_ml_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,6 +41,8 @@ void main() async {
 
   // Load persisted server URL before anything tries to call the API.
   await ApiService.init();
+  // Warm up on-device ML interpreters in background
+  unawaited(OnDeviceMLService.initialize());
   // Request camera permission upfront so it never interrupts the capture flow.
   await Permission.camera.request();
   await SystemChrome.setPreferredOrientations([
