@@ -298,21 +298,12 @@ class FingerprintAuthSdk(private val context: Context) {
                 }
             }
 
-            // Fallback: If YOLO detected < 2 fingers, use exact partition_slap_slots geometry from backend
+            // Fallback: If YOLO detected < 2 fingers, use precision overlay slot geometry
             if (cropRects.size < 2) {
                 cropRects.clear()
-                val slotW = (w * 0.15f).toInt()
-                val gap = (w * 0.047f).toInt()
-                val startX = (w * 0.12f).toInt()
-                val topY = (h * 0.12f).toInt()
-                val slotH = (h * 0.55f).toInt()
-
                 for (i in 0 until 4) {
-                    val x1 = (startX + i * (slotW + gap)).coerceIn(0, w - 1)
-                    val x2 = (x1 + slotW).coerceIn(x1 + 1, w)
-                    val y1 = topY.coerceIn(0, h - 1)
-                    val y2 = (topY + slotH).coerceIn(y1 + 1, h)
-                    cropRects.add(Pair(intArrayOf(x1, y1, x2, y2), 0.95))
+                    val rect = OpencvImageProcessor.detectSlotFingerCrop(bitmap, i, isRight)
+                    cropRects.add(Pair(rect, 0.95))
                 }
             }
 

@@ -288,48 +288,70 @@ object OpencvImageProcessor {
     }
 
     /**
-     * Detects and extracts the distal fingertip in a slap camera slot using skin chroma & apex scanning.
+     * Detects and extracts the distal fingertip in a slap camera slot matching _SlapOverlayPainter.
+     * Extracts only the distal friction ridge pad (1.35x aspect ratio) centered on the physical finger.
      */
     fun detectSlotFingerCrop(bitmap: Bitmap, slotIndex: Int, isRightHand: Boolean): IntArray {
         val w = bitmap.width
         val h = bitmap.height
 
-        val slotW = w * 0.15f
+        val fingerW = w * 0.15f
         val gap = w * 0.047f
-        val startX = (w - (4f * slotW + 3f * gap)) / 2f
+        val startX = (w - (4f * fingerW + 3f * gap)) / 2f
+        val knuckleY = h * 0.80f
 
-        val sx1 = (startX + slotIndex * (slotW + gap) - slotW * 0.10f).toInt().coerceIn(0, w - 1)
-        val sx2 = (startX + slotIndex * (slotW + gap) + slotW * 1.10f).toInt().coerceIn(sx1 + 1, w)
-
-        val topFractions = if (isRightHand) {
-            floatArrayOf(0.24f, 0.16f, 0.22f, 0.32f)
+        val lengths = if (isRightHand) {
+            floatArrayOf(0.50f, 0.58f, 0.52f, 0.40f)
         } else {
-            floatArrayOf(0.32f, 0.22f, 0.16f, 0.24f)
-        }
-        val botFractions = if (isRightHand) {
-            floatArrayOf(0.65f, 0.58f, 0.62f, 0.72f)
-        } else {
-            floatArrayOf(0.72f, 0.62f, 0.58f, 0.65f)
+            floatArrayOf(0.40f, 0.52f, 0.58f, 0.50f)
         }
 
-        val sy1 = (h * topFractions[slotIndex]).toInt().coerceIn(0, h - 1)
-        val sy2 = (h * botFractions[slotIndex]).toInt().coerceIn(sy1 + 1, h)
+        val topY = knuckleY - lengths[slotIndex.coerceIn(0, 3)] * h
+        val distalH = fingerW * 1.35f
+        val padX = fingerW * 0.14f
 
-        return refineSkinApexCrop(bitmap, sx1, sy1, sx2, sy2)
+        val sx1 = (startX + slotIndex * (fingerW + gap) - padX).toInt().coerceIn(0, w - 1)
+        val sx2 = (startX + slotIndex * (fingerW + gap) + fingerW + padX).toInt().coerceIn(sx1 + 1, w)
+        val sy1 = (topY - fingerW * 0.05f).toInt().coerceIn(0, h - 1)
+        val sy2 = (topY + distalH).toInt().coerceIn(sy1 + 1, h)
+
+        return getCenteringFingertipCrop(bitmap, sx1, sy1, sx2, sy2)
     }
 
-    /**
-     * Crops ONLY the required distal fingertip pad from a slap slot.
-     * Returns a square 1:1 image.
-     */
-    fun cropSlapFingerDistal(bitmap: Bitmap, slotIndex: Int, handSide: String): Bitmap {
-        val isRight = !handSide.lowercase().contains("left")
-        val rect = detectSlotFingerCrop(bitmap, slotIndex, isRight)
-        val (x1, y1, x2, y2) = rect
+    private fun getCenteringFingertipCrop(bitmap: Bitmap, x1: Int, y1: Int, x2: Int, y2: Int): IntArray {
+        val w = bitmap.width
+        val h = bitmap.height
         val cw = max(10, x2 - x1)
         val ch = max(10, y2 - y1)
-        val crop = Bitmap.createBitmap(bitmap, x1, y1, cw, ch)
-        return toSquareBitmap(crop)
+
+        val pixels = IntArray(cw * ch)
+        bitmap.getPixels(pixels, 0, cw, x1, y1, cw, ch)
+
+        var sumX = 0L
+        var count = 0
+        for (y in 0 until ch) {
+            for (x in 0 until cw) {
+                val c = pixels[y * cw + x]
+                val r = (c shr 16) and 0xFF
+                val g = (c shr 8) and 0xFF
+                val b = c and 0xFF
+                val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
+                if (r > 35 && g > 20 && (r >= b - 15) && lum in 25..240) {
+                    sumX += x
+                    count++
+                }
+            }
+        }
+
+        if (count > (cw * ch * 0.04)) {
+            val centerX = (x1 + (sumX / count).toInt()).coerceIn(0, w - 1)
+            val halfW = (cw / 2).coerceAtLeast(20)
+            val newX1 = (centerX - halfW).coerceIn(0, w - 1)
+            val newX2 = (centerX + halfW).coerceIn(newX1 + 1, w)
+            return intArrayOf(newX1, y1, newX2, y2)
+        }
+
+        return intArrayOf(x1, y1, x2, y2)
     }
 
     private fun applyCentralRoiErosion(maskBytes: ByteArray, w: Int, h: Int): ByteArray {

@@ -80,25 +80,27 @@ class LocalBiometricEngine {
       final List<MapEntry<Rect, img.Image>> placedForComposite = [];
       int totalMinutiae = 0;
 
-      final topFractions = hand.toLowerCase().contains('left')
-          ? [0.40, 0.28, 0.22, 0.30]
-          : [0.30, 0.22, 0.28, 0.40];
+      final double fingerW = w * 0.15;
+      final double gap = w * 0.047;
+      final double startX = (w - (4 * fingerW + 3 * gap)) / 2;
+      final double knuckleY = h * 0.80;
+
+      final lengths = hand.toLowerCase().contains('left')
+          ? [0.40, 0.52, 0.58, 0.50]
+          : [0.50, 0.58, 0.52, 0.40];
 
       for (int i = 0; i < numFingers; i++) {
         final pos = positions[i];
 
-        final double fingerW = w * 0.15;
-        final double gap = w * 0.047;
-        final double startX = (w - (4 * fingerW + 3 * gap)) / 2;
+        final double topY = knuckleY - lengths[i] * h;
+        final double distalH = fingerW * 1.35;
+        final double padX = fingerW * 0.14;
 
-        final double padX = fingerW * 0.08;
         final int cropX = (startX + i * (fingerW + gap) - padX).round().clamp(0, w - 1);
-        final int cropEndX = (startX + i * (fingerW + gap) + fingerW + padX * 2).round().clamp(cropX + 1, w);
+        final int cropEndX = (startX + i * (fingerW + gap) + fingerW + padX).round().clamp(cropX + 1, w);
         final int cropW = cropEndX - cropX;
-        final int distalH = (cropW * 1.25).round();
-        final int topY = (h * topFractions[i]).round();
-        final int cropY = (topY - distalH * 0.05).round().clamp(0, h - 1);
-        final int cropH = distalH.clamp(10, h - cropY);
+        final int cropY = (topY - fingerW * 0.05).round().clamp(0, h - 1);
+        final int cropH = distalH.round().clamp(10, h - cropY);
 
         final rawCrop = img.copyCrop(
           decoded,
