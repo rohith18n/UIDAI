@@ -93,14 +93,55 @@ class LocalBiometricEngine {
         final pos = positions[i];
 
         final double topY = knuckleY - lengths[i] * h;
-        final double distalH = fingerW * 1.35;
         final double padX = fingerW * 0.14;
 
-        final int cropX = (startX + i * (fingerW + gap) - padX).round().clamp(0, w - 1);
-        final int cropEndX = (startX + i * (fingerW + gap) + fingerW + padX).round().clamp(cropX + 1, w);
-        final int cropW = cropEndX - cropX;
-        final int cropY = (topY - fingerW * 0.05).round().clamp(0, h - 1);
-        final int cropH = distalH.round().clamp(10, h - cropY);
+        final int searchX1 = (startX + i * (fingerW + gap) - padX).round().clamp(0, w - 1);
+        final int searchX2 = (startX + i * (fingerW + gap) + fingerW + padX).round().clamp(searchX1 + 1, w);
+        final int searchY1 = (topY - fingerW * 0.45).round().clamp(0, h - 1);
+        final int searchY2 = (topY + fingerW * 1.65).round().clamp(searchY1 + 1, h);
+
+        final int swW = searchX2 - searchX1;
+        final int swH = searchY2 - searchY1;
+
+        int apexLocalY = -1;
+        int sumX = 0;
+        int skinCount = 0;
+
+        for (int localY = 0; localY < swH; localY++) {
+          int rowSkin = 0;
+          for (int localX = 0; localX < swW; localX++) {
+            final pixel = decoded.getPixel(searchX1 + localX, searchY1 + localY);
+            final r = pixel.r.toInt();
+            final g = pixel.g.toInt();
+            final b = pixel.b.toInt();
+            final lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt();
+
+            if (r > 42 && g > 25 && (r >= b - 10) && (r - g) >= 4 && lum >= 30 && lum <= 245) {
+              rowSkin++;
+              sumX += localX;
+              skinCount++;
+            }
+          }
+          if (rowSkin >= max(4, (swW / 14).round()) && apexLocalY == -1) {
+            apexLocalY = localY;
+          }
+        }
+
+        final int distalHeight = (fingerW * 1.50).round();
+        final int targetW = (fingerW * 1.18).round().clamp(20, w);
+
+        final int cropY = (apexLocalY != -1 && skinCount > 40)
+            ? (searchY1 + apexLocalY - (fingerW * 0.08).round()).clamp(0, h - distalHeight)
+            : (topY.round() - (fingerW * 0.20).round()).clamp(0, h - distalHeight);
+        final int cropH = distalHeight.clamp(10, h - cropY);
+
+        final int centerX = (skinCount > 40)
+            ? (searchX1 + (sumX / skinCount).round()).clamp(0, w - 1)
+            : ((searchX1 + searchX2) / 2).round().clamp(0, w - 1);
+
+        final int halfW = (targetW / 2).round();
+        final int cropX = (centerX - halfW).clamp(0, w - targetW);
+        final int cropW = targetW.clamp(10, w - cropX);
 
         final rawCrop = img.copyCrop(
           decoded,

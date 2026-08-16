@@ -291,7 +291,7 @@ object OpencvImageProcessor {
 
     /**
      * Detects and extracts the distal fingertip in a slap camera slot matching _SlapOverlayPainter.
-     * Extracts only the distal friction ridge pad (1.35x aspect ratio) centered on the physical finger.
+     * Uses dynamic skin apex detection to capture the complete distal friction ridge pad without apex cutoff.
      */
     fun detectSlotFingerCrop(bitmap: Bitmap, slotIndex: Int, isRightHand: Boolean): IntArray {
         val w = bitmap.width
@@ -309,18 +309,26 @@ object OpencvImageProcessor {
         }
 
         val topY = knuckleY - lengths[slotIndex.coerceIn(0, 3)] * h
-        val distalH = fingerW * 1.35f
         val padX = fingerW * 0.14f
 
-        val sx1 = (startX + slotIndex * (fingerW + gap) - padX).toInt().coerceIn(0, w - 1)
-        val sx2 = (startX + slotIndex * (fingerW + gap) + fingerW + padX).toInt().coerceIn(sx1 + 1, w)
-        val sy1 = (topY - fingerW * 0.05f).toInt().coerceIn(0, h - 1)
-        val sy2 = (topY + distalH).toInt().coerceIn(sy1 + 1, h)
+        // Search window: expanded above and below topY to find true fingertip apex
+        val searchX1 = (startX + slotIndex * (fingerW + gap) - padX).toInt().coerceIn(0, w - 1)
+        val searchX2 = (startX + slotIndex * (fingerW + gap) + fingerW + padX).toInt().coerceIn(searchX1 + 1, w)
+        val searchY1 = (topY - fingerW * 0.45f).toInt().coerceIn(0, h - 1)
+        val searchY2 = (topY + fingerW * 1.65f).toInt().coerceIn(searchY1 + 1, h)
 
-        return getCenteringFingertipCrop(bitmap, sx1, sy1, sx2, sy2)
+        return getCenteringFingertipCrop(bitmap, searchX1, searchY1, searchX2, searchY2, fingerW, topY)
     }
 
-    private fun getCenteringFingertipCrop(bitmap: Bitmap, x1: Int, y1: Int, x2: Int, y2: Int): IntArray {
+    private fun getCenteringFingertipCrop(
+        bitmap: Bitmap,
+        x1: Int,
+        y1: Int,
+        x2: Int,
+        y2: Int,
+        fingerW: Float,
+        expectedTopY: Float
+    ): IntArray {
         val w = bitmap.width
         val h = bitmap.height
         val cw = max(10, x2 - x1)
@@ -329,31 +337,54 @@ object OpencvImageProcessor {
         val pixels = IntArray(cw * ch)
         bitmap.getPixels(pixels, 0, cw, x1, y1, cw, ch)
 
+        var apexLocalY = -1
         var sumX = 0L
-        var count = 0
-        for (y in 0 until ch) {
-            for (x in 0 until cw) {
-                val c = pixels[y * cw + x]
+        var skinCount = 0
+
+        for (localY in 0 until ch) {
+            var rowSkin = 0
+            for (localX in 0 until cw) {
+                val c = pixels[localY * cw + localX]
                 val r = (c shr 16) and 0xFF
                 val g = (c shr 8) and 0xFF
                 val b = c and 0xFF
                 val lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt()
-                if (r > 35 && g > 20 && (r >= b - 15) && lum in 25..240) {
-                    sumX += x
-                    count++
+
+                // Biological skin chroma check
+                if (r > 42 && g > 25 && (r >= b - 10) && (r - g) >= 4 && lum in 30..245) {
+                    rowSkin++
+                    sumX += localX
+                    skinCount++
                 }
+            }
+            if (rowSkin >= max(4, cw / 14) && apexLocalY == -1) {
+                apexLocalY = localY
             }
         }
 
-        if (count > (cw * ch * 0.04)) {
-            val centerX = (x1 + (sumX / count).toInt()).coerceIn(0, w - 1)
-            val halfW = (cw / 2).coerceAtLeast(20)
-            val newX1 = (centerX - halfW).coerceIn(0, w - 1)
-            val newX2 = (centerX + halfW).coerceIn(newX1 + 1, w)
-            return intArrayOf(newX1, y1, newX2, y2)
+        val distalHeight = (fingerW * 1.50f).toInt()
+        val targetW = (fingerW * 1.18f).toInt().coerceAtLeast(20)
+
+        // If skin apex found, anchor the top of crop just above the detected physical skin apex
+        val startY: Int = if (apexLocalY != -1 && skinCount > 40) {
+            (y1 + apexLocalY - (fingerW * 0.08f).toInt()).coerceIn(0, h - distalHeight)
+        } else {
+            (expectedTopY.toInt() - (fingerW * 0.20f).toInt()).coerceIn(0, h - distalHeight)
+        }
+        val endY: Int = (startY + distalHeight).coerceIn(startY + 10, h)
+
+        // Center X on the skin tissue centroid
+        val centerX: Int = if (skinCount > 40) {
+            (x1 + (sumX / skinCount).toInt()).coerceIn(0, w - 1)
+        } else {
+            ((x1 + x2) / 2).coerceIn(0, w - 1)
         }
 
-        return intArrayOf(x1, y1, x2, y2)
+        val halfW: Int = targetW / 2
+        val startX: Int = (centerX - halfW).coerceIn(0, w - targetW)
+        val endX: Int = (startX + targetW).coerceIn(startX + 10, w)
+
+        return intArrayOf(startX, startY, endX, endY)
     }
 
     private fun applyCentralRoiErosion(maskBytes: ByteArray, w: Int, h: Int): ByteArray {
