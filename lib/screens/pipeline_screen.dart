@@ -87,6 +87,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
           // Camera
           FingerprintCameraWidget(
             onImageCaptured: _run,
+            onRetake: () => setState(() => _result = null),
             disabled: _loading,
             mode: CaptureMode.single,
             overlayStyle: 'oval',

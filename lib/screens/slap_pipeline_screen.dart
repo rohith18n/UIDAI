@@ -89,6 +89,7 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
           const SizedBox(height: 20),
           FingerprintCameraWidget(
             onImageCaptured: _process,
+            onRetake: () => setState(() => _result = null),
             disabled: _loading,
             mode: CaptureMode.slap,
             overlayStyle: 'slap',

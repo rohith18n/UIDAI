@@ -17,9 +17,11 @@ class FingerprintCameraWidget extends StatefulWidget {
   final String overlayStyle;
   final String handSide;
   final bool autoCapture;
+  final VoidCallback? onRetake;
   const FingerprintCameraWidget({
     super.key,
     required this.onImageCaptured,
+    this.onRetake,
     this.disabled = false,
     this.mode = CaptureMode.single,
     this.overlayStyle = 'oval',
@@ -35,6 +37,7 @@ class FingerprintCameraWidget extends StatefulWidget {
 class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     with WidgetsBindingObserver, SingleTickerProviderStateMixin {
   CameraController? _ctrl;
+  bool _isDisposed = false;
   CameraLensDirection _lensDirection = CameraLensDirection.back;
   bool _initializing = false;
   bool _live = false;
@@ -120,11 +123,16 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
   @override
   void dispose() {
+    _isDisposed = true;
     WidgetsBinding.instance.removeObserver(this);
     _focusTimer?.cancel();
     _scanCtrl.dispose();
     _killPollLoop();
-    _ctrl?.dispose();
+    final ctrl = _ctrl;
+    _ctrl = null;
+    try {
+      ctrl?.dispose();
+    } catch (_) {}
     super.dispose();
   }
 
@@ -133,9 +141,12 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
       _killPollLoop();
-      _ctrl?.dispose();
+      final ctrl = _ctrl;
       _ctrl = null;
-      if (mounted) {
+      try {
+        ctrl?.dispose();
+      } catch (_) {}
+      if (mounted && !_isDisposed) {
         setState(() {
           _live = false;
           _torchOn = false;
@@ -147,9 +158,14 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
   Future<void> _startCamera() async {
     if (widget.disabled || _initializing || _live) return;
+    widget.onRetake?.call();
     setState(() {
       _initializing = true;
       _error = null;
+      _captured = null;
+      _qualityPassed = null;
+      _qualityMessage = '';
+      _qualityIssues = [];
     });
     try {
       final status = await Permission.camera.status;
@@ -241,14 +257,17 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
   Future<void> _stopCamera() async {
     _killPollLoop();
-    if (_torchOn) {
+    final ctrl = _ctrl;
+    _ctrl = null;
+    if (_torchOn && ctrl != null) {
       try {
-        await _ctrl?.setFlashMode(FlashMode.off);
+        await ctrl.setFlashMode(FlashMode.off);
       } catch (_) {}
     }
-    await _ctrl?.dispose();
-    _ctrl = null;
-    if (mounted) {
+    try {
+      await ctrl?.dispose();
+    } catch (_) {}
+    if (mounted && !_isDisposed) {
       setState(() {
         _live = false;
         _torchOn = false;
@@ -434,26 +453,33 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   bool _isTakingPicture = false;
 
   Future<XFile?> _safeTakePicture() async {
-    if (_ctrl == null || !_ctrl!.value.isInitialized) return null;
+    if (_isDisposed || !mounted) return null;
+    final ctrl = _ctrl;
+    if (ctrl == null || !ctrl.value.isInitialized) return null;
 
     int waitedMs = 0;
     while (_isTakingPicture && waitedMs < 2000) {
+      if (_isDisposed || !mounted) return null;
       await Future.delayed(const Duration(milliseconds: 40));
       waitedMs += 40;
     }
 
-    if (_ctrl == null || !_ctrl!.value.isInitialized) return null;
+    if (_isDisposed || !mounted) return null;
+    if (_ctrl != ctrl || !ctrl.value.isInitialized) return null;
 
     _isTakingPicture = true;
     try {
-      return await _ctrl!.takePicture();
+      if (_isDisposed || !mounted || !ctrl.value.isInitialized) return null;
+      return await ctrl.takePicture();
     } catch (e, st) {
-      dev.log(
-        '⚠️ [CAMERA.CAPTURE_EX] $e',
-        name: 'CAM.SAFE',
-        error: e,
-        stackTrace: st,
-      );
+      if (!_isDisposed && mounted) {
+        dev.log(
+          '⚠️ [CAMERA.CAPTURE_EX] $e',
+          name: 'CAM.SAFE',
+          error: e,
+          stackTrace: st,
+        );
+      }
       return null;
     } finally {
       _isTakingPicture = false;
@@ -600,6 +626,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
               : 'Position finger inside oval — tap screen to focus & Capture';
       _guidanceColor = Colors.white60;
     });
+    widget.onRetake?.call();
     await _startCamera();
   }
 
@@ -621,8 +648,16 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   }
 
   Future<void> _pollOnce() async {
-    if (!_pollActive || !_live || _capturing || _captured != null) return;
-    if (_ctrl == null || !_ctrl!.value.isInitialized) return;
+    if (_isDisposed ||
+        !mounted ||
+        !_pollActive ||
+        !_live ||
+        _capturing ||
+        _captured != null) {
+      return;
+    }
+    final ctrl = _ctrl;
+    if (ctrl == null || !ctrl.value.isInitialized) return;
     if (_pollInFlight || _isTakingPicture) {
       _scheduleNextPoll();
       return;
@@ -761,9 +796,15 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   }
 
   void _scheduleNextPoll() {
-    if (!_pollActive) return;
+    if (!_pollActive || _isDisposed || !mounted) return;
     Future.delayed(_pollCooldown, () {
-      if (_pollActive && !_capturing && _captured == null) _pollOnce();
+      if (_pollActive &&
+          !_isDisposed &&
+          mounted &&
+          !_capturing &&
+          _captured == null) {
+        _pollOnce();
+      }
     });
   }
 
@@ -1473,14 +1514,18 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             children: [
               Container(
                 width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
                 decoration: BoxDecoration(
                   color: _liveQualityPassed == true ? YS.greenBg : YS.cardAlt,
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
-                    color: _liveQualityPassed == true
-                        ? YS.green.withValues(alpha: 0.4)
-                        : YS.stroke,
+                    color:
+                        _liveQualityPassed == true
+                            ? YS.green.withValues(alpha: 0.4)
+                            : YS.stroke,
                   ),
                 ),
                 child: Row(
@@ -1489,9 +1534,10 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                       width: 18,
                       height: 18,
                       child: CircularProgressIndicator(
-                        value: _liveQualityPassed == true
-                            ? (_passCount / _passesNeeded).clamp(0.1, 1.0)
-                            : null,
+                        value:
+                            _liveQualityPassed == true
+                                ? (_passCount / _passesNeeded).clamp(0.1, 1.0)
+                                : null,
                         strokeWidth: 2.5,
                         color: _liveQualityPassed == true ? YS.green : YS.amber,
                       ),
@@ -1518,7 +1564,9 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 children: [
                   Expanded(
                     child: _btn(
-                      _isSlap ? 'Capture Slap (Manual)' : 'Capture Now (Manual)',
+                      _isSlap
+                          ? 'Capture Slap (Manual)'
+                          : 'Capture Now (Manual)',
                       _captureFresh,
                       false,
                       icon: Icons.camera_rounded,
@@ -1684,10 +1732,11 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       children: [
         Expanded(
           child: GestureDetector(
-            onTap: () => setState(() {
-              _autoCaptureMode = true;
-              _passCount = 0;
-            }),
+            onTap:
+                () => setState(() {
+                  _autoCaptureMode = true;
+                  _passCount = 0;
+                }),
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 8),
               decoration: BoxDecoration(
@@ -1718,10 +1767,11 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         ),
         Expanded(
           child: GestureDetector(
-            onTap: () => setState(() {
-              _autoCaptureMode = false;
-              _passCount = 0;
-            }),
+            onTap:
+                () => setState(() {
+                  _autoCaptureMode = false;
+                  _passCount = 0;
+                }),
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 8),
               decoration: BoxDecoration(

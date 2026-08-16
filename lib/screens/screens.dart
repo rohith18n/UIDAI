@@ -290,6 +290,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
             const SizedBox(height: 10),
             FingerprintCameraWidget(
               onImageCaptured: _verify,
+              onRetake: () => setState(() => _result = null),
               disabled: _loading,
               mode: widget.mode,
               overlayStyle: _isSlap ? 'slap' : 'oval',
@@ -563,6 +564,11 @@ class _QcScreenState extends State<QcScreen> {
             ],
             FingerprintCameraWidget(
               onImageCaptured: _run,
+              onRetake:
+                  () => setState(() {
+                    _result = null;
+                    _readiness = null;
+                  }),
               disabled: _loading,
               mode: widget.mode,
               overlayStyle: _isSlap ? 'slap' : 'oval',
@@ -1257,11 +1263,20 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _checking = false;
   Map<String, dynamic>? _engineStatus;
+  late TextEditingController _urlCtrl;
+  String _mode = ApiService.engineMode;
 
   @override
   void initState() {
     super.initState();
+    _urlCtrl = TextEditingController(text: ApiService.singleUrl);
     _checkEngine();
+  }
+
+  @override
+  void dispose() {
+    _urlCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _checkEngine() async {
@@ -1277,11 +1292,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _engineStatus = {'status': 'ok', 'mode': 'offline_on_device'};
+          _engineStatus = {
+            'status': 'ok',
+            'mode': 'offline_on_device',
+            'error': '$e',
+          };
           _checking = false;
         });
       }
     }
+  }
+
+  Future<void> _saveUrl() async {
+    final url = _urlCtrl.text.trim();
+    if (url.isNotEmpty) {
+      await ApiService.setSingleUrl(url);
+      await ApiService.setSlapUrl(url);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Cloud URL saved: $url', style: YS.label(13)),
+            backgroundColor: YS.green,
+          ),
+        );
+      }
+      _checkEngine();
+    }
+  }
+
+  Future<void> _toggleMode(String m) async {
+    setState(() => _mode = m);
+    await ApiService.setEngineMode(m);
+    _checkEngine();
   }
 
   @override
@@ -1308,18 +1350,125 @@ class _SettingsScreenState extends State<SettingsScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              'ENGINE ARCHITECTURE',
+              'ENGINE ARCHITECTURE & TIER SPLIT',
               style: YS
                   .label(11, color: YS.inkLight, w: FontWeight.w700)
                   .copyWith(letterSpacing: 1.8),
             ),
             const SizedBox(height: 12),
+            // ── Mode Switcher ──────────────────────────────────────────
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: YS.greenBg,
+                color: YS.card,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: YS.green.withValues(alpha: 0.3)),
+                border: Border.all(color: YS.stroke),
+                boxShadow: YS.cardShadow,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Operational Mode',
+                    style: YS.label(13, w: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _modeOption(
+                          'hybrid',
+                          'Cloud Hybrid (/v2)',
+                          'On-Device Preprocessing + Cloud Matcher',
+                          Icons.cloud_sync_rounded,
+                          YS.blue,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: _modeOption(
+                          'offline',
+                          '100% Offline',
+                          'Pure Standalone On-Device Engine',
+                          Icons.bolt_rounded,
+                          YS.green,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            // ── Cloud /v2 URL Config ───────────────────────────────────
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: YS.card,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: YS.stroke),
+                boxShadow: YS.cardShadow,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.dns_rounded, color: YS.blue, size: 18),
+                      const SizedBox(width: 8),
+                      Text(
+                        'backend2 Cloud Base URL (/v2/*)',
+                        style: YS.label(13, w: FontWeight.w700),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _urlCtrl,
+                    style: YS.label(13),
+                    decoration: InputDecoration(
+                      hintText: 'https://34-100-150-103.sslip.io',
+                      suffixIcon: IconButton(
+                        icon: const Icon(
+                          Icons.check_circle_rounded,
+                          color: YS.green,
+                        ),
+                        onPressed: _saveUrl,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      TextButton.icon(
+                        onPressed: () {
+                          _urlCtrl.text = ApiService.defaultCloudUrl;
+                          _saveUrl();
+                        },
+                        icon: const Icon(Icons.replay_rounded, size: 14),
+                        label: const Text('Reset to Live Mumbai Cloud VM'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+            // ── Diagnostics Card ───────────────────────────────────────
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color:
+                    _engineStatus?['mode'] == 'cloud_hybrid'
+                        ? YS.blueBg
+                        : YS.greenBg,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: (_engineStatus?['mode'] == 'cloud_hybrid'
+                          ? YS.blue
+                          : YS.green)
+                      .withValues(alpha: 0.3),
+                ),
                 boxShadow: YS.cardShadow,
               ),
               child: Column(
@@ -1331,11 +1480,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         width: 36,
                         height: 36,
                         decoration: BoxDecoration(
-                          color: YS.green,
+                          color:
+                              _engineStatus?['mode'] == 'cloud_hybrid'
+                                  ? YS.blue
+                                  : YS.green,
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(
-                          Icons.bolt_rounded,
+                        child: Icon(
+                          _engineStatus?['mode'] == 'cloud_hybrid'
+                              ? Icons.cloud_done_rounded
+                              : Icons.bolt_rounded,
                           color: Colors.white,
                           size: 20,
                         ),
@@ -1346,15 +1500,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              '100% On-Device Standalone',
+                              _engineStatus?['mode'] == 'cloud_hybrid'
+                                  ? 'Cloud Hybrid Active (/v2/* Connected)'
+                                  : '100% On-Device Standalone Active',
                               style: YS.label(
                                 14,
                                 w: FontWeight.w700,
-                                color: YS.green,
+                                color:
+                                    _engineStatus?['mode'] == 'cloud_hybrid'
+                                        ? YS.blue
+                                        : YS.green,
                               ),
                             ),
                             Text(
-                              'Zero backend server required — pure Flutter/Dart',
+                              _engineStatus?['mode'] == 'cloud_hybrid'
+                                  ? 'Connected to ${_engineStatus!['cloud_url'] ?? ApiService.singleUrl}'
+                                  : 'Zero network dependency — local RANSAC matcher',
                               style: YS.label(11, color: YS.inkMid),
                             ),
                           ],
@@ -1363,40 +1524,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ],
                   ),
                   const SizedBox(height: 14),
-                  Divider(color: YS.green.withValues(alpha: 0.2)),
+                  Divider(
+                    color: (_engineStatus?['mode'] == 'cloud_hybrid'
+                            ? YS.blue
+                            : YS.green)
+                        .withValues(alpha: 0.2),
+                  ),
                   const SizedBox(height: 8),
                   _featureRow(
                     Icons.check_circle_rounded,
-                    'On-Device Laplacian Quality Gate & Guidance',
+                    'On-Device Laplacian Quality Gate & Guidance (<100ms)',
                   ),
                   _featureRow(
                     Icons.check_circle_rounded,
-                    'Integral-Image Local Adaptive FIR Preprocessing',
+                    'On-Device YOLO Multi-Finger Detector & Apex Anchoring',
                   ),
                   _featureRow(
                     Icons.check_circle_rounded,
-                    '8-Neighbor Crossing Number Minutiae Extraction',
+                    'On-Device U²-Net Segmentation & Integral FIR Preprocessing',
                   ),
                   _featureRow(
                     Icons.check_circle_rounded,
-                    'ISO/IEC 19794-2 Binary Templatization',
+                    'MinutiaeNet Neural Extraction & ISO/IEC 19794-2 Serialization',
                   ),
                   _featureRow(
                     Icons.check_circle_rounded,
-                    'Bozorth/Euclidean 1:1 Verification & 1:N Identification',
-                  ),
-                  _featureRow(
-                    Icons.check_circle_rounded,
-                    'Multi-Finger 4-Finger Slap Slicing & Composite Stitching',
-                  ),
-                  _featureRow(
-                    Icons.check_circle_rounded,
-                    'Local Encrypted SQLite/SharedPreferences Database',
+                    'Position-Constrained Slap Matcher (Index-to-Index, Middle-to-Middle)',
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
             OutlinedButton.icon(
               onPressed: _checking ? null : _checkEngine,
               icon:
@@ -1407,36 +1565,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         child: CircularProgressIndicator(strokeWidth: 2),
                       )
                       : const Icon(Icons.refresh_rounded, size: 16),
-              label: const Text('Run Engine Health Diagnostic'),
+              label: const Text('Test Connection & Run Diagnostic'),
             ),
-            if (_engineStatus != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: YS.card,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: YS.stroke),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(
-                      Icons.check_circle_rounded,
-                      color: YS.green,
-                      size: 16,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Engine Active · Mode: ${_engineStatus!['mode'] ?? 'on_device'}',
-                      style: YS.label(12, color: YS.ink, w: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ),
-            ],
             const SizedBox(height: 32),
             Text(
               'ABOUT',
@@ -1444,6 +1574,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   .label(11, color: YS.inkLight, w: FontWeight.w700)
                   .copyWith(letterSpacing: 1.8),
             ),
+            const SizedBox(height: 12),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(20),
@@ -1485,6 +1616,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             const SizedBox(height: 40),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _modeOption(
+    String key,
+    String title,
+    String subtitle,
+    IconData icon,
+    Color activeColor,
+  ) {
+    final isSel = _mode == key;
+    return GestureDetector(
+      onTap: () => _toggleMode(key),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: isSel ? activeColor.withValues(alpha: 0.1) : YS.cardAlt,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSel ? activeColor : YS.stroke,
+            width: isSel ? 1.5 : 1.0,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 16, color: isSel ? activeColor : YS.inkLight),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: YS.label(
+                      12,
+                      w: FontWeight.w700,
+                      color: isSel ? activeColor : YS.ink,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(subtitle, style: YS.label(10, color: YS.inkLight)),
           ],
         ),
       ),
