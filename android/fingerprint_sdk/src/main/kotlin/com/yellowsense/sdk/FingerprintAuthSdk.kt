@@ -161,8 +161,11 @@ class FingerprintAuthSdk(private val context: Context) {
             // Stage 4: Liveness Verification
             val liveness = tfliteEngine.evaluateLiveness(croppedBitmap)
 
-            // Stage 5: Minutiae Feature Extraction (Morphological Skeleton Crossing-Number)
-            val minutiaeList = MinutiaeExtractor.extractMinutiae(preprocessedBitmap, croppedBitmap, maxPoints = 45)
+            // Stage 5: Minutiae Feature Extraction via Neural MinutiaeNet (matching backend)
+            var minutiaeList = tfliteEngine.extractMinutiaeNet(preprocessedBitmap, threshold = 0.28f)
+            if (minutiaeList.size < 8) {
+                minutiaeList = MinutiaeExtractor.extractMinutiae(preprocessedBitmap, croppedBitmap, maxPoints = 45)
+            }
 
             // Stage 6: ISO/IEC 19794-2 Template Serialization
             val isoBase64 = IsoTemplateGenerator.generateIsoTemplateBase64(
@@ -336,7 +339,10 @@ class FingerprintAuthSdk(private val context: Context) {
                 val neuralMask = tfliteEngine.segmentFingertip(cropped)
                 val preproc = OpencvImageProcessor.createContactEquivalentFIR(cropped, neuralMask)
                 val liveness = tfliteEngine.evaluateLiveness(cropped)
-                val minutiae = MinutiaeExtractor.extractMinutiae(preproc, cropped, maxPoints = 45)
+                var minutiae = tfliteEngine.extractMinutiaeNet(preproc, threshold = 0.28f)
+                if (minutiae.size < 8) {
+                    minutiae = MinutiaeExtractor.extractMinutiae(preproc, cropped, maxPoints = 45)
+                }
                 val isoB64 = IsoTemplateGenerator.generateIsoTemplateBase64(minutiae, preproc.width, preproc.height)
                 val vis = MinutiaeExtractor.drawVisualization(preproc, minutiae)
 
