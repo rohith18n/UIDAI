@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:developer' as dev;
 import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -56,6 +57,14 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   bool? _qualityPassed;
   String _qualityMessage = '';
   List<String> _qualityIssues = [];
+
+  bool? _liveQualityPassed;
+  String _liveQualityGrade = '';
+  double _liveQualityScore = 0.0;
+  List<String> _liveQualityIssues = [];
+  double _liveBlurScore = 0.0;
+  double _liveBrightness = 0.0;
+  double _liveGlare = 0.0;
 
   String _roiGuidance = '';
   String _guidance = 'Place finger inside the oval — tap screen to focus';
@@ -210,10 +219,8 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         _autoFlashOn = false;
       });
 
-      if (_autoCapture) {
-        await Future.delayed(_focusSettleDelay);
-        if (mounted && _live) _kickPollLoop();
-      }
+      await Future.delayed(_focusSettleDelay);
+      if (mounted && _live) _kickPollLoop();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -378,6 +385,35 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     }
   }
 
+  bool _isTakingPicture = false;
+
+  Future<XFile?> _safeTakePicture() async {
+    if (_ctrl == null || !_ctrl!.value.isInitialized) return null;
+
+    int waitedMs = 0;
+    while (_isTakingPicture && waitedMs < 2000) {
+      await Future.delayed(const Duration(milliseconds: 40));
+      waitedMs += 40;
+    }
+
+    if (_ctrl == null || !_ctrl!.value.isInitialized) return null;
+
+    _isTakingPicture = true;
+    try {
+      return await _ctrl!.takePicture();
+    } catch (e, st) {
+      dev.log(
+        '⚠️ [CAMERA.CAPTURE_EX] $e',
+        name: 'CAM.SAFE',
+        error: e,
+        stackTrace: st,
+      );
+      return null;
+    } finally {
+      _isTakingPicture = false;
+    }
+  }
+
   Future<void> _captureFresh() async {
     if (_ctrl == null || !_ctrl!.value.isInitialized || _capturing) return;
     _capturing = true;
@@ -387,7 +423,16 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     if (!mounted) return;
     setState(() => _flashing = false);
     try {
-      final xf = await _ctrl!.takePicture();
+      final xf = await _safeTakePicture();
+      if (xf == null) {
+        if (mounted) {
+          setState(() {
+            _capturing = false;
+            _error = 'Camera busy — please tap Capture again';
+          });
+        }
+        return;
+      }
       try {
         await _ctrl!.setFlashMode(FlashMode.off);
       } catch (_) {}
@@ -426,36 +471,15 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
           );
           passed = localQuality.isPassed;
           guideMsg = localQuality.guidanceText;
-          if (!localQuality.isFingerDetected) {
-            issuesList.add(
-              _isSlap
-                  ? 'No hand detected — place 4 fingers flat inside guide'
-                  : 'No finger detected inside oval',
-            );
-          } else if (_isSlap && localQuality.fingerCount < 3) {
-            issuesList.add('Place all 4 fingers flat inside guide');
-          }
-          if (localQuality.isBlurry) {
-            issuesList.add('Finger is blurry — tap screen to focus 🔍');
-          }
+          issuesList = List<String>.from(localQuality.issues);
           if (localQuality.tooDark) {
-            issuesList.add('Too dark — turn on flash 💡');
             _setAutoFlash(true);
-          }
-          if (localQuality.tooBright) {
-            issuesList.add('Too bright — avoid direct glare');
-          }
-          if (localQuality.hasGlare) {
-            issuesList.add('Glare detected — tilt finger away from light');
-          }
-          if (!localQuality.isRoiAligned && localQuality.roiGuidance.isNotEmpty) {
-            issuesList.add(localQuality.roiGuidance);
           }
           if (passed) {
             guideMsg =
                 _isSlap
-                    ? '✓ Slap hand is clear & ready'
-                    : '✓ Fingerprint is clear & ready';
+                    ? '✓ Slap hand is clear & optimal'
+                    : '✓ Fingerprint is clear & optimal';
           }
         } catch (_) {
           passed = true;
@@ -472,6 +496,11 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
           _capturing = false;
         });
 
+        dev.log(
+          '📸 [CAPTURE.EVAL] Passed: $passed | Issues: $issuesList | Guide: $guideMsg',
+          name: 'CAM.CAPTURE',
+        );
+
         if (passed) {
           HapticFeedback.heavyImpact();
           widget.onImageCaptured(stable);
@@ -479,7 +508,13 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
           HapticFeedback.vibrate();
         }
       }
-    } catch (e) {
+    } catch (e, st) {
+      dev.log(
+        '🔥 [CAPTURE.ERROR] $e',
+        name: 'CAM.CAPTURE',
+        error: e,
+        stackTrace: st,
+      );
       if (mounted) {
         setState(() {
           _error = 'Capture failed: $e';
@@ -542,7 +577,10 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   Future<void> _pollOnce() async {
     if (!_pollActive || !_live || _capturing || _captured != null) return;
     if (_ctrl == null || !_ctrl!.value.isInitialized) return;
-    if (_pollInFlight) return;
+    if (_pollInFlight || _isTakingPicture) {
+      _scheduleNextPoll();
+      return;
+    }
 
     if (_pollAttempts >= _maxPollAttempts) {
       if (mounted) {
@@ -559,7 +597,8 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     _pollAttempts++;
 
     try {
-      final xf = await _ctrl!.takePicture();
+      final xf = await _safeTakePicture();
+      if (xf == null || !_pollActive || _capturing) return;
       final file = File(xf.path);
 
       if (!_pollActive || _capturing) return;
@@ -591,8 +630,15 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
       if (mounted) {
         setState(() {
+          _liveQualityPassed = passed;
+          _liveQualityGrade = localQuality.readinessGrade;
+          _liveQualityScore = localQuality.readinessScore;
+          _liveQualityIssues = List<String>.from(localQuality.issues);
+          _liveBlurScore = localQuality.blurScore;
+          _liveBrightness = localQuality.brightness;
+          _liveGlare = localQuality.glareRatio;
           _guidance = passed ? '✓ Good — hold still' : guidance;
-          _guidanceColor = passed ? YS.amber : Colors.orangeAccent;
+          _guidanceColor = passed ? YS.green : Colors.orangeAccent;
           _qualityScore = score;
           _roiGuidance = localQuality.roiGuidance;
         });
@@ -609,7 +655,10 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         _passCount++;
         if (_tipsVisible && mounted) setState(() => _tipsVisible = false);
 
-        if (_passCount >= _passesNeeded && _pollActive && !_capturing) {
+        if (_autoCapture &&
+            _passCount >= _passesNeeded &&
+            _pollActive &&
+            !_capturing) {
           _pollInFlight = false;
           await _commitCapture();
           return;
@@ -1301,63 +1350,6 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             ],
           ),
 
-        if (_live && _captured == null && _tipsVisible) ...[
-          const SizedBox(height: 10),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            decoration: BoxDecoration(
-              color: YS.cardAlt,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: YS.stroke),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      'Tips for best capture',
-                      style: YS
-                          .label(11, color: YS.inkMid, w: FontWeight.w700)
-                          .copyWith(letterSpacing: 0.3),
-                    ),
-                    const Spacer(),
-                    GestureDetector(
-                      onTap: () => setState(() => _tipsVisible = false),
-                      child: const Icon(
-                        Icons.close_rounded,
-                        size: 14,
-                        color: YS.inkLight,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                _tip(
-                  Icons.touch_app_rounded,
-                  'Tap anywhere on the preview to refocus',
-                ),
-                _tip(
-                  Icons.flash_auto_rounded,
-                  'Low light? Auto-flash activates automatically; tap ⚡ for manual',
-                ),
-                _tip(
-                  Icons.zoom_in_rounded,
-                  _isSlap
-                      ? 'Use zoom slider so all four fingers fill the slots'
-                      : 'Use zoom slider to fill the oval with your finger — 2–3× works best',
-                ),
-                _tip(
-                  Icons.pan_tool_rounded,
-                  _isSlap
-                      ? 'Hold your hand steady and flat, fingers slightly apart'
-                      : 'Follow the arrows to centre your finger in the oval',
-                ),
-              ],
-            ),
-          ),
-        ],
-
         if (!_live && !_initializing && _captured == null)
           _btn(
             'Start Camera',
@@ -1393,6 +1385,8 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
               ],
             ),
           ),
+
+        _qualityGuidanceBanner(),
 
         if (_live && !_autoCapture)
           Row(
@@ -1475,9 +1469,301 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             ),
           ),
         ],
+        if (_live && _captured == null && _tipsVisible) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: YS.cardAlt,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: YS.stroke),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'Tips for best capture',
+                      style: YS
+                          .label(11, color: YS.inkMid, w: FontWeight.w700)
+                          .copyWith(letterSpacing: 0.3),
+                    ),
+                    const Spacer(),
+                    GestureDetector(
+                      onTap: () => setState(() => _tipsVisible = false),
+                      child: const Icon(
+                        Icons.close_rounded,
+                        size: 14,
+                        color: YS.inkLight,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                _tip(
+                  Icons.touch_app_rounded,
+                  'Tap anywhere on the preview to refocus',
+                ),
+                _tip(
+                  Icons.flash_auto_rounded,
+                  'Low light? Auto-flash activates automatically; tap ⚡ for manual',
+                ),
+                _tip(
+                  Icons.zoom_in_rounded,
+                  _isSlap
+                      ? 'Use zoom slider so all four fingers fill the slots'
+                      : 'Use zoom slider to fill the oval with your finger — 2–3× works best',
+                ),
+                _tip(
+                  Icons.pan_tool_rounded,
+                  _isSlap
+                      ? 'Hold your hand steady and flat, fingers slightly apart'
+                      : 'Follow the arrows to centre your finger in the oval',
+                ),
+              ],
+            ),
+          ),
+        ],
       ],
     ),
   );
+
+  Widget _qualityGuidanceBanner() {
+    if (!_live && _captured == null) return const SizedBox.shrink();
+
+    // 1. Post-Capture Quality Analysis Card
+    if (_captured != null) {
+      if (_evaluatingCapture) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: YS.cardAlt,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: YS.stroke),
+          ),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: YS.amber,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Analyzing image quality…',
+                style: YS.label(12, color: YS.inkMid),
+              ),
+            ],
+          ),
+        );
+      }
+
+      final ok = _qualityPassed == true;
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: ok ? YS.greenBg : YS.redBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: (ok ? YS.green : YS.red).withValues(alpha: 0.35),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  ok ? Icons.check_circle_rounded : Icons.error_rounded,
+                  color: ok ? YS.green : YS.red,
+                  size: 16,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    ok
+                        ? '✓ High Quality Fingerprint Captured'
+                        : 'Quality Check Failed — Retake Recommended',
+                    style: YS.label(
+                      12,
+                      color: ok ? YS.green : YS.red,
+                      w: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (!ok && _qualityIssues.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              ..._qualityIssues.map(
+                (issue) => Padding(
+                  padding: const EdgeInsets.only(left: 4, top: 2),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '• ',
+                        style: YS.label(12, color: YS.red, w: FontWeight.w700),
+                      ),
+                      Expanded(
+                        child: Text(
+                          issue,
+                          style: YS.label(
+                            11,
+                            color: YS.red,
+                            w: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    // 2. Real-Time Live Pre-Capture Quality Guidance
+    final ok = _liveQualityPassed == true;
+    final issues = _liveQualityIssues;
+
+    if (ok) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: YS.greenBg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: YS.green.withValues(alpha: 0.35)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: YS.green, size: 16),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _isSlap
+                    ? '✓ All fingers clear — optimal quality'
+                    : '✓ Fingerprint clear & sharp — ready to capture',
+                style: YS.label(12, color: YS.green, w: FontWeight.w600),
+              ),
+            ),
+            if (_liveQualityScore > 0)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: YS.green.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  '${_liveQualityScore.toInt()}%',
+                  style: YS.label(11, color: YS.green, w: FontWeight.w700),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    if (issues.isNotEmpty) {
+      final isRed = issues.any(
+        (i) =>
+            i.contains('dark') ||
+            i.contains('Glare') ||
+            i.contains('No finger') ||
+            i.contains('No hand'),
+      );
+      final color = isRed ? YS.red : YS.amber;
+      final bg = isRed ? YS.redBg : YS.amberSoft;
+
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: color.withValues(alpha: 0.35)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  isRed
+                      ? Icons.warning_amber_rounded
+                      : Icons.info_outline_rounded,
+                  color: color,
+                  size: 16,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Live Quality Guidance',
+                    style: YS.label(12, color: color, w: FontWeight.w700),
+                  ),
+                ),
+                if (_liveQualityGrade.isNotEmpty)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: color.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      _liveQualityGrade,
+                      style: YS.label(10, color: color, w: FontWeight.w700),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ...issues.map(
+              (issue) => Padding(
+                padding: const EdgeInsets.only(left: 4, top: 2),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '• ',
+                      style: YS.label(12, color: color, w: FontWeight.w700),
+                    ),
+                    Expanded(
+                      child: Text(
+                        issue,
+                        style: YS.label(11, color: color, w: FontWeight.w600),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (_liveBlurScore > 0 || _liveBrightness > 0)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'Sharpness: ${_liveBlurScore.toStringAsFixed(1)} • Brightness: ${_liveBrightness.toInt()} • Glare: ${(_liveGlare * 100).toStringAsFixed(1)}%',
+                  style: YS.label(10, color: color.withValues(alpha: 0.8)),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    return const SizedBox.shrink();
+  }
 
   Widget _tip(IconData icon, String text) => Padding(
     padding: const EdgeInsets.only(top: 4),

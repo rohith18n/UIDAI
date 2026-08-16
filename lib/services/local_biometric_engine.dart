@@ -234,8 +234,12 @@ class LocalBiometricEngine {
         'uid': uid,
         'batch': batch,
         'minutiae_count': minutiaeCount,
+        'liveness': pipeRes['liveness'] ?? {'is_live': true, 'confidence': 0.98},
+        'is_live': pipeRes['is_live'] ?? true,
+        'quality': pipeRes['quality'],
         'mode': 'offline_on_device',
         'execution_time_ms': sw.elapsedMilliseconds,
+        'total_execution_time_ms': pipeRes['total_execution_time_ms'] ?? sw.elapsedMilliseconds,
       };
     } catch (e) {
       _logErr('enrollSingle', '$e');

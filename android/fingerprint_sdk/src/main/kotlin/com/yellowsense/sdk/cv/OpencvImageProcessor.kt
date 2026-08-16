@@ -81,7 +81,9 @@ object OpencvImageProcessor {
         }
 
         val meanBrightness = totalLuminance / (width * height)
-        val isBrightnessOk = meanBrightness in 50.0..210.0
+        val tooDark = meanBrightness < 60.0
+        val tooBright = meanBrightness > 220.0
+        val isBrightnessOk = !tooDark && !tooBright
         val glareRatio = brightPixelCount.toDouble() / (width * height)
         val glareDetected = glareRatio > 0.05
 
@@ -104,14 +106,14 @@ object OpencvImageProcessor {
         val laplacianMean = if (count > 0) laplacianSum / count else 0.0
         val laplacianVariance = if (count > 0) (laplacianSqSum / count) - (laplacianMean * laplacianMean) else 0.0
         val blurScore = max(0.0, laplacianVariance)
-        val isBlurry = blurScore < 15.0
+        val isBlurry = blurScore < 26.0
 
         val guidance = when {
-            isBlurry -> "Finger is blurry — tap screen to focus 🔍"
-            meanBrightness < 50.0 -> "Image is darker — open flash 💡"
-            meanBrightness > 210.0 -> "Too bright — reduce exposure"
-            glareDetected -> "Glare detected — adjust angle"
-            else -> "Good — capture ready"
+            isBlurry -> "Image is blurry — hold steady & tap to focus 🔍"
+            tooDark -> "Too dark — turn on flash 💡 or increase lighting"
+            tooBright -> "Too bright — avoid direct light exposure"
+            glareDetected -> "Glare detected — tilt finger away from direct reflection ☀️"
+            else -> "Optimal Quality — capture ready ✓"
         }
 
         return QualityCheckResult(

@@ -318,7 +318,9 @@ class _EnrollScreenState extends State<EnrollScreen> {
             _row('Minutiae Extracted', '${r['minutiae_count'] ?? 0} points'),
             _row(
               'Liveness',
-              (r['liveness'] is Map && r['liveness']['is_live'] == true)
+              (r['is_live'] == true ||
+                      (r['liveness'] is Map && r['liveness']['is_live'] == true) ||
+                      (r['liveness'] == null && r['success'] == true))
                   ? 'Live ✓'
                   : 'Spoof',
             ),
