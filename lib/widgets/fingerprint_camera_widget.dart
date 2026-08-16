@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:developer' as dev;
 import 'dart:io';
+import 'dart:math';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -49,7 +50,8 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
   static const Duration _focusSettleDelay = Duration(milliseconds: 300);
 
-  bool get _autoCapture => widget.autoCapture;
+  bool _autoCaptureMode = false;
+  bool get _autoCapture => _autoCaptureMode;
   bool _pollInFlight = false;
   bool _capturing = false;
   bool _pollActive = false;
@@ -72,14 +74,19 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   double _qualityScore = 0.0;
   int _passCount = 0;
 
+  double? _prevCentroidX;
+  double? _prevCentroidY;
+  double? _prevSkinRatio;
+  static const double _maxAllowedJitter = 16.0;
+
   DateTime? _lastPassTime;
-  static const Duration _maxPassGap = Duration(seconds: 3);
+  static const Duration _maxPassGap = Duration(milliseconds: 1800);
 
   int _pollAttempts = 0;
   static const int _maxPollAttempts = 80;
 
   static const int _passesNeeded = 3;
-  static const Duration _pollCooldown = Duration(milliseconds: 350);
+  static const Duration _pollCooldown = Duration(milliseconds: 260);
 
   File? _lastGoodFrame;
   bool _tipsVisible = true;
@@ -95,6 +102,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   @override
   void initState() {
     super.initState();
+    _autoCaptureMode = widget.autoCapture;
     WidgetsBinding.instance.addObserver(this);
     _scanCtrl = AnimationController(
       vsync: this,
@@ -372,6 +380,35 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       return;
     }
 
+    try {
+      final Uint8List frameBytes = await stable.readAsBytes();
+      final verifyQuality = OnDeviceQualityService.evaluateYPlane(
+        yPlaneBytes: frameBytes,
+        width: 1080,
+        height: 1920,
+        bytesPerRow: 1080,
+        isSlap: _isSlap,
+      );
+
+      if (!verifyQuality.isPassed) {
+        dev.log(
+          '⚠️ [AUTO.ABORT] Frame failed quality on final commit: ${verifyQuality.issues}',
+          name: 'CAM.AUTO',
+        );
+        if (mounted) {
+          setState(() {
+            _capturing = false;
+            _passCount = 0;
+            _lastGoodFrame = null;
+            _guidance = 'Hold finger steady inside guide';
+            _guidanceColor = Colors.orangeAccent;
+          });
+          _kickPollLoop();
+        }
+        return;
+      }
+    } catch (_) {}
+
     if (mounted) {
       setState(() => _flashing = true);
       await Future.delayed(const Duration(milliseconds: 80));
@@ -380,7 +417,16 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         _flashing = false;
         _captured = stable;
         _live = false;
+        _evaluatingCapture = false;
+        _qualityPassed = true;
+        _qualityMessage =
+            _isSlap
+                ? '✓ High Quality Slap Captured'
+                : '✓ High Quality Fingerprint Captured';
+        _qualityIssues = [];
+        _capturing = false;
       });
+      HapticFeedback.heavyImpact();
       widget.onImageCaptured(stable);
     }
   }
@@ -628,23 +674,55 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         await _setAutoFlash(false);
       }
 
+      // Inter-frame Stillness & Motion Jitter Check
+      bool isStill = true;
+      if (_prevCentroidX != null && _prevCentroidY != null) {
+        final dx = localQuality.offsetX - _prevCentroidX!;
+        final dy = localQuality.offsetY - _prevCentroidY!;
+        final jitter = sqrt(dx * dx + dy * dy);
+        final skinDelta =
+            (_prevSkinRatio != null)
+                ? (localQuality.skinRatio - _prevSkinRatio!).abs()
+                : 0.0;
+
+        if (jitter > _maxAllowedJitter || skinDelta > 0.12) {
+          isStill = false;
+          dev.log(
+            '⚠️ [QC.MOTION] Jitter: ${jitter.toStringAsFixed(1)}px | SkinDelta: ${(skinDelta * 100).toStringAsFixed(1)}%',
+            name: 'QC.STILL',
+          );
+        }
+      }
+
+      _prevCentroidX = localQuality.offsetX;
+      _prevCentroidY = localQuality.offsetY;
+      _prevSkinRatio = localQuality.skinRatio;
+
+      final bool overallPass = passed && isStill;
+
       if (mounted) {
         setState(() {
-          _liveQualityPassed = passed;
+          _liveQualityPassed = overallPass;
           _liveQualityGrade = localQuality.readinessGrade;
           _liveQualityScore = localQuality.readinessScore;
           _liveQualityIssues = List<String>.from(localQuality.issues);
+          if (!isStill && localQuality.issues.isEmpty) {
+            _liveQualityIssues.add('Hold steady — motion detected');
+          }
           _liveBlurScore = localQuality.blurScore;
           _liveBrightness = localQuality.brightness;
           _liveGlare = localQuality.glareRatio;
-          _guidance = passed ? '✓ Good — hold still' : guidance;
-          _guidanceColor = passed ? YS.green : Colors.orangeAccent;
+          _guidance =
+              overallPass
+                  ? '✓ Good — hold still'
+                  : (!isStill ? 'Hold steady — motion detected' : guidance);
+          _guidanceColor = overallPass ? YS.green : Colors.orangeAccent;
           _qualityScore = score;
           _roiGuidance = localQuality.roiGuidance;
         });
       }
 
-      if (passed) {
+      if (overallPass) {
         final now = DateTime.now();
         if (_lastPassTime != null &&
             now.difference(_lastPassTime!) > _maxPassGap) {
@@ -1386,9 +1464,74 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             ),
           ),
 
+        if (_live && _captured == null) _modeToggle(),
+
         _qualityGuidanceBanner(),
 
-        if (_live && !_autoCapture)
+        if (_live && _captured == null && _autoCaptureMode)
+          Column(
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: _liveQualityPassed == true ? YS.greenBg : YS.cardAlt,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: _liveQualityPassed == true
+                        ? YS.green.withValues(alpha: 0.4)
+                        : YS.stroke,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        value: _liveQualityPassed == true
+                            ? (_passCount / _passesNeeded).clamp(0.1, 1.0)
+                            : null,
+                        strokeWidth: 2.5,
+                        color: _liveQualityPassed == true ? YS.green : YS.amber,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _liveQualityPassed == true
+                            ? 'Auto-Capturing... Hold still ($_passCount/$_passesNeeded)'
+                            : 'Align finger inside guide for auto-capture',
+                        style: YS.label(
+                          12,
+                          color:
+                              _liveQualityPassed == true ? YS.green : YS.inkMid,
+                          w: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: _btn(
+                      _isSlap ? 'Capture Slap (Manual)' : 'Capture Now (Manual)',
+                      _captureFresh,
+                      false,
+                      icon: Icons.camera_rounded,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _btn('✕', _stopCamera, false, square: true),
+                ],
+              ),
+            ],
+          ),
+
+        if (_live && _captured == null && !_autoCaptureMode)
           Row(
             children: [
               Expanded(
@@ -1525,6 +1668,88 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             ),
           ),
         ],
+      ],
+    ),
+  );
+
+  Widget _modeToggle() => Container(
+    margin: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.all(4),
+    decoration: BoxDecoration(
+      color: YS.cardAlt,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: YS.stroke),
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: GestureDetector(
+            onTap: () => setState(() {
+              _autoCaptureMode = true;
+              _passCount = 0;
+            }),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              decoration: BoxDecoration(
+                color: _autoCaptureMode ? YS.amber : Colors.transparent,
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.bolt_rounded,
+                    size: 16,
+                    color: _autoCaptureMode ? YS.bg : YS.inkLight,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'AUTO CAPTURE',
+                    style: YS.label(
+                      11,
+                      color: _autoCaptureMode ? YS.bg : YS.inkMid,
+                      w: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Expanded(
+          child: GestureDetector(
+            onTap: () => setState(() {
+              _autoCaptureMode = false;
+              _passCount = 0;
+            }),
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              decoration: BoxDecoration(
+                color: !_autoCaptureMode ? YS.amber : Colors.transparent,
+                borderRadius: BorderRadius.circular(9),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.touch_app_rounded,
+                    size: 16,
+                    color: !_autoCaptureMode ? YS.bg : YS.inkLight,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    'MANUAL',
+                    style: YS.label(
+                      11,
+                      color: !_autoCaptureMode ? YS.bg : YS.inkMid,
+                      w: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
       ],
     ),
   );
