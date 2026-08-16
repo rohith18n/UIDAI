@@ -107,7 +107,7 @@ class OnDeviceQualityService {
     if (r < 50 || g < 28 || b < 15) return false;
     if ((r - g) < 8) return false; // Neutral gray/white fabric or paper
     if ((r - b) < 14) return false; // Blue/green cloth or background
-
+    
     final int sum = r + g + b;
     if (sum == 0) return false;
     final double nr = r / sum;
@@ -181,10 +181,7 @@ class OnDeviceQualityService {
             final r = pixel.r.toInt().clamp(0, 255);
             final g = pixel.g.toInt().clamp(0, 255);
             final b = pixel.b.toInt().clamp(0, 255);
-            final lum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(
-              0,
-              255,
-            );
+            final lum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0, 255);
 
             if (gIdx < gray.length) {
               gray[gIdx++] = lum;
@@ -234,6 +231,16 @@ class OnDeviceQualityService {
     final double rx = effWidth * (isSlap ? 0.38 : 0.24);
     final double ry = effHeight * (isSlap ? 0.35 : 0.26);
 
+    // Slap 4-slot guides
+    final double slapFingerW = effWidth * 0.15;
+    final double slapGap = effWidth * 0.047;
+    final double slapStartX = (effWidth - (4 * slapFingerW + 3 * slapGap)) / 2;
+    final double slapKnuckleY = effHeight * 0.80;
+    final slapLengths = [0.50, 0.58, 0.52, 0.40]; // lengths for 4 slots
+
+    final List<int> slotSkinCounts = List.filled(4, 0);
+    final List<int> slotTotalCounts = List.filled(4, 0);
+
     int totalInRoi = 0;
     int skinInRoi = 0;
     int totalSampled = 0;
@@ -254,10 +261,26 @@ class OnDeviceQualityService {
         final int lum = gray[idx];
         if (lum > 242) overexposedCount++;
 
-        // Test if (x, y) is inside the Target Guide Oval
-        final double dx = (x - cx) / rx;
-        final double dy = (y - cy) / ry;
-        final bool inRoi = (dx * dx + dy * dy) <= 1.15;
+        // Test if (x, y) is inside the Target Guide Oval or Slap Slots
+        bool inRoi = false;
+        if (isSlap) {
+          for (int i = 0; i < 4; i++) {
+            final double topY = slapKnuckleY - slapLengths[i] * effHeight;
+            final double sx1 = slapStartX + i * (slapFingerW + slapGap);
+            final double sx2 = sx1 + slapFingerW;
+            final double sy1 = topY;
+            final double sy2 = topY + slapFingerW * 1.35;
+            if (x >= sx1 && x <= sx2 && y >= sy1 && y <= sy2) {
+              inRoi = true;
+              slotTotalCounts[i]++;
+              break;
+            }
+          }
+        } else {
+          final double dx = (x - cx) / rx;
+          final double dy = (y - cy) / ry;
+          inRoi = (dx * dx + dy * dy) <= 1.15;
+        }
 
         if (inRoi) {
           totalInRoi++;
@@ -281,25 +304,49 @@ class OnDeviceQualityService {
             skinInRoi++;
             sumSkinRoiX += x;
             sumSkinRoiY += y;
+
+            if (isSlap) {
+              for (int i = 0; i < 4; i++) {
+                final double topY = slapKnuckleY - slapLengths[i] * effHeight;
+                final double sx1 = slapStartX + i * (slapFingerW + slapGap);
+                final double sx2 = sx1 + slapFingerW;
+                final double sy1 = topY;
+                final double sy2 = topY + slapFingerW * 1.35;
+                if (x >= sx1 && x <= sx2 && y >= sy1 && y <= sy2) {
+                  slotSkinCounts[i]++;
+                  break;
+                }
+              }
+            }
           }
         }
       }
     }
 
-    final double skinRatioInRoi =
-        totalInRoi > 0 ? (skinInRoi / totalInRoi) : 0.0;
-    final double meanBrightness =
-        totalInRoi > 0 ? (totalBrightnessInRoi / totalInRoi) : 0.0;
-    final double glareFraction =
-        totalSampled > 0 ? (overexposedCount / totalSampled) : 0.0;
+    final double skinRatioInRoi = totalInRoi > 0 ? (skinInRoi / totalInRoi) : 0.0;
+    final double meanBrightness = totalInRoi > 0 ? (totalBrightnessInRoi / totalInRoi) : 0.0;
+    final double glareFraction = totalSampled > 0 ? (overexposedCount / totalSampled) : 0.0;
 
-    // Finger Presence: Requires verified human skin covering >= 22% of the target guide oval
-    final double minSkinThreshold = isSlap ? 0.18 : 0.22;
-    final bool isFingerDetected = (skinRatioInRoi >= minSkinThreshold);
+    int activeSlotCount = 0;
+    if (isSlap) {
+      for (int i = 0; i < 4; i++) {
+        final double sRatio = slotTotalCounts[i] > 0
+            ? (slotSkinCounts[i] / slotTotalCounts[i])
+            : 0.0;
+        if (sRatio >= 0.18) {
+          activeSlotCount++;
+        }
+      }
+    }
+
+    // Finger Presence Check
+    final double minSkinThreshold = isSlap ? 0.15 : 0.22;
+    final bool isFingerDetected = isSlap
+        ? (activeSlotCount >= 2 || skinRatioInRoi >= minSkinThreshold)
+        : (skinRatioInRoi >= minSkinThreshold);
 
     // ── 2. Ridge Sharpness & Blur (Computed on verified skin pixels inside ROI) ─
-    final double currentBlurThreshold =
-        isSlap ? blurThresholdSlap : blurThresholdSingle;
+    final double currentBlurThreshold = isSlap ? blurThresholdSlap : blurThresholdSingle;
     final double blurScore = _computeSkinLaplacianVariance(
       gray,
       skinMask,
@@ -313,7 +360,7 @@ class OnDeviceQualityService {
     final bool tooBright = meanBrightness > maxBrightness;
     final bool hasGlare = glareFraction > maxGlareRatio;
 
-    // ── 3. Centering & Distance (Relative to Target Oval) ─────────────────────
+    // ── 3. Centering & Distance (Relative to Target Oval/Slots) ───────────────
     double offsetX = 0.0;
     double offsetY = 0.0;
     bool isRoiAligned = true;
@@ -326,8 +373,8 @@ class OnDeviceQualityService {
       offsetX = centroidX - cx;
       offsetY = centroidY - cy;
 
-      final double tolX = rx * 0.45;
-      final double tolY = ry * 0.45;
+      final double tolX = rx * (isSlap ? 0.55 : 0.45);
+      final double tolY = ry * (isSlap ? 0.55 : 0.45);
       isRoiAligned = (offsetX.abs() <= tolX) && (offsetY.abs() <= tolY);
 
       if (!isRoiAligned) {
@@ -339,19 +386,17 @@ class OnDeviceQualityService {
       }
     }
 
-    final bool isTooFar =
-        !isFingerDetected || skinRatioInRoi < (isSlap ? 0.22 : 0.28);
+    final bool isTooFar = !isFingerDetected || skinRatioInRoi < (isSlap ? 0.18 : 0.28);
     final bool isTooClose = skinRatioInRoi > 0.98 && (meanBrightness > 70);
 
     // ── 4. Formulate Actionable Guidance Issues ──────────────────────────────
     final List<String> issues = [];
     if (!isFingerDetected) {
-      issues.add(
-        isSlap
-            ? 'No hand detected — place 4 fingers flat inside guide'
-            : 'No finger detected — place finger inside oval',
-      );
+      issues.add(isSlap ? 'No hand detected — place 4 fingers flat inside guide' : 'No finger detected — place finger inside oval');
     } else {
+      if (isSlap && activeSlotCount < 3) {
+        issues.add('Place all 4 fingers flat inside slots ($activeSlotCount/4 detected)');
+      }
       if (isBlurry) {
         issues.add('Finger is blurry — tap screen to focus 🔍');
       }
@@ -368,9 +413,7 @@ class OnDeviceQualityService {
         issues.add(roiGuidance);
       }
       if (isTooFar) {
-        issues.add(
-          isSlap ? 'Move hand closer to fill slots' : 'Move finger closer 🔍',
-        );
+        issues.add(isSlap ? 'Move hand closer to fill slots' : 'Move finger closer 🔍');
       }
     }
 
@@ -378,20 +421,13 @@ class OnDeviceQualityService {
     const double blurMax = 180.0;
     final double blurNorm = (blurScore.clamp(0.0, blurMax)) / blurMax;
     const double brightCenter = 130.0;
-    final double brightNorm = max(
-      0.0,
-      1.0 - (meanBrightness - brightCenter).abs() / brightCenter,
-    );
+    final double brightNorm = max(0.0, 1.0 - (meanBrightness - brightCenter).abs() / brightCenter);
     final double glareNorm = hasGlare ? 0.0 : 1.0;
     final double skinNorm = skinRatioInRoi.clamp(0.0, 1.0);
 
     double rawScore = 0.0;
     if (isFingerDetected) {
-      rawScore =
-          (blurNorm * 40.0) +
-          (brightNorm * 25.0) +
-          (glareNorm * 15.0) +
-          (skinNorm * 20.0);
+      rawScore = (blurNorm * 40.0) + (brightNorm * 25.0) + (glareNorm * 15.0) + (skinNorm * 20.0);
     }
     rawScore = rawScore.clamp(0.0, 100.0);
     final double score = double.parse(rawScore.toStringAsFixed(1));
@@ -407,20 +443,11 @@ class OnDeviceQualityService {
       grade = 'Rejected';
     }
 
-    final String guidance =
-        issues.isNotEmpty
-            ? issues.first
-            : (isSlap
-                ? 'Slap hand clear — hold still ✓'
-                : 'Fingerprint clear & sharp — ready to capture ✓');
+    final String guidance = issues.isNotEmpty
+        ? issues.first
+        : (isSlap ? '✓ 4 slap fingers clear & sharp — ready to capture' : '✓ Fingerprint clear & sharp — ready to capture');
 
-    final bool isPassed =
-        issues.isEmpty &&
-        isFingerDetected &&
-        !isBlurry &&
-        !tooDark &&
-        !tooBright &&
-        !hasGlare;
+    final bool isPassed = issues.isEmpty && isFingerDetected && !isBlurry && !tooDark && !tooBright && !hasGlare;
 
     final result = QualityAssessmentResult(
       blurScore: double.parse(blurScore.toStringAsFixed(2)),
@@ -436,7 +463,7 @@ class OnDeviceQualityService {
       isTooClose: isTooClose,
       isRoiAligned: isRoiAligned,
       isFingerDetected: isFingerDetected,
-      fingerCount: isFingerDetected ? (isSlap ? 4 : 1) : 0,
+      fingerCount: isSlap ? activeSlotCount : (isFingerDetected ? 1 : 0),
       detectionConf: double.parse((skinRatioInRoi * 0.98).toStringAsFixed(4)),
       offsetX: double.parse(offsetX.toStringAsFixed(1)),
       offsetY: double.parse(offsetY.toStringAsFixed(1)),
@@ -451,12 +478,12 @@ class OnDeviceQualityService {
     // Terminal Diagnostic Logging
     if (isPassed) {
       dev.log(
-        '✓ [QUALITY.PASS] Skin: ${(skinRatioInRoi * 100).toStringAsFixed(1)}% | RidgeVar: $blurScore | Bright: ${result.brightness} | Grade: $grade ($score/100)',
+        '✓ [QUALITY.PASS] Slap: $isSlap | Slots: $activeSlotCount/4 | Skin: ${(skinRatioInRoi * 100).toStringAsFixed(1)}% | RidgeVar: $blurScore | Bright: ${result.brightness} | Grade: $grade ($score/100)',
         name: 'QC.LIVE',
       );
     } else {
       dev.log(
-        '⚠️ [QUALITY.FAIL] Issues: $issues | Skin: ${(skinRatioInRoi * 100).toStringAsFixed(1)}% (min: ${(minSkinThreshold * 100).toInt()}%) | RidgeVar: $blurScore (thr: $currentBlurThreshold) | Bright: ${result.brightness}',
+        '⚠️ [QUALITY.FAIL] Slap: $isSlap | Issues: $issues | Slots: $activeSlotCount/4 | Skin: ${(skinRatioInRoi * 100).toStringAsFixed(1)}% | RidgeVar: $blurScore (thr: $currentBlurThreshold) | Bright: ${result.brightness}',
         name: 'QC.LIVE',
       );
     }
@@ -485,9 +512,7 @@ class OnDeviceQualityService {
 
       for (int x = step; x < width - step; x += step) {
         final int cIdx = rowCurr + x;
-        if (skinMask.isNotEmpty &&
-            cIdx < skinMask.length &&
-            skinMask[cIdx] == 0) {
+        if (skinMask.isNotEmpty && cIdx < skinMask.length && skinMask[cIdx] == 0) {
           continue;
         }
 
