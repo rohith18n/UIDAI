@@ -43,8 +43,6 @@ void main() async {
   await ApiService.init();
   // Warm up on-device ML interpreters in background
   unawaited(OnDeviceMLService.initialize());
-  // Request camera permission upfront so it never interrupts the capture flow.
-  await Permission.camera.request();
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
