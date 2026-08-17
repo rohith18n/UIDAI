@@ -3,7 +3,6 @@ import 'dart:developer' as dev;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'theme/app_theme.dart';
 import 'router.dart';
 import 'screens/splash_screen.dart';
