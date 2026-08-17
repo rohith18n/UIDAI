@@ -37,12 +37,19 @@ class LocalBiometricEngine {
 
       if (!kIsWeb && Platform.isAndroid) {
         try {
-          final nativeRes = await OfflineSdkService.processSlapOffline(bytes, handSide: hand);
-          if (nativeRes['success'] == true && (nativeRes['fingers'] as List?)?.isNotEmpty == true) {
+          final nativeRes = await OfflineSdkService.processSlapOffline(
+            bytes,
+            handSide: hand,
+          );
+          if (nativeRes['success'] == true &&
+              (nativeRes['fingers'] as List?)?.isNotEmpty == true) {
             sw.stop();
             nativeRes['total_execution_time_ms'] = sw.elapsedMilliseconds;
             nativeRes['execution_time_ms'] = sw.elapsedMilliseconds;
-            _log('processSlap', 'Native Kotlin processed 4 slap fingers in ${sw.elapsedMilliseconds}ms');
+            _log(
+              'processSlap',
+              'Native Kotlin processed 4 slap fingers in ${sw.elapsedMilliseconds}ms',
+            );
             return nativeRes;
           }
         } catch (ne) {
@@ -70,9 +77,10 @@ class LocalBiometricEngine {
       final int h = decoded.height;
 
       // Finger positions based on hand
-      final positions = hand.toLowerCase().contains('left')
-          ? ['little', 'ring', 'middle', 'index']
-          : ['index', 'middle', 'ring', 'little'];
+      final positions =
+          hand.toLowerCase().contains('left')
+              ? ['little', 'ring', 'middle', 'index']
+              : ['index', 'middle', 'ring', 'little'];
 
       final List<Map<String, dynamic>> fingerResults = [];
       final int numFingers = 4;
@@ -85,9 +93,10 @@ class LocalBiometricEngine {
       final double startX = (w - (4 * fingerW + 3 * gap)) / 2;
       final double knuckleY = h * 0.80;
 
-      final lengths = hand.toLowerCase().contains('left')
-          ? [0.40, 0.52, 0.58, 0.50]
-          : [0.50, 0.58, 0.52, 0.40];
+      final lengths =
+          hand.toLowerCase().contains('left')
+              ? [0.40, 0.52, 0.58, 0.50]
+              : [0.50, 0.58, 0.52, 0.40];
 
       for (int i = 0; i < numFingers; i++) {
         final pos = positions[i];
@@ -95,10 +104,17 @@ class LocalBiometricEngine {
         final double topY = knuckleY - lengths[i] * h;
         final double padX = fingerW * 0.14;
 
-        final int searchX1 = (startX + i * (fingerW + gap) - padX).round().clamp(0, w - 1);
-        final int searchX2 = (startX + i * (fingerW + gap) + fingerW + padX).round().clamp(searchX1 + 1, w);
+        final int searchX1 = (startX + i * (fingerW + gap) - padX)
+            .round()
+            .clamp(0, w - 1);
+        final int searchX2 = (startX + i * (fingerW + gap) + fingerW + padX)
+            .round()
+            .clamp(searchX1 + 1, w);
         final int searchY1 = (topY - fingerW * 0.45).round().clamp(0, h - 1);
-        final int searchY2 = (topY + fingerW * 1.65).round().clamp(searchY1 + 1, h);
+        final int searchY2 = (topY + fingerW * 1.65).round().clamp(
+          searchY1 + 1,
+          h,
+        );
 
         final int swW = searchX2 - searchX1;
         final int swH = searchY2 - searchY1;
@@ -110,13 +126,21 @@ class LocalBiometricEngine {
         for (int localY = 0; localY < swH; localY++) {
           int rowSkin = 0;
           for (int localX = 0; localX < swW; localX++) {
-            final pixel = decoded.getPixel(searchX1 + localX, searchY1 + localY);
+            final pixel = decoded.getPixel(
+              searchX1 + localX,
+              searchY1 + localY,
+            );
             final r = pixel.r.toInt();
             final g = pixel.g.toInt();
             final b = pixel.b.toInt();
             final lum = (0.299 * r + 0.587 * g + 0.114 * b).toInt();
 
-            if (r > 42 && g > 25 && (r >= b - 10) && (r - g) >= 4 && lum >= 30 && lum <= 245) {
+            if (r > 42 &&
+                g > 25 &&
+                (r >= b - 10) &&
+                (r - g) >= 4 &&
+                lum >= 30 &&
+                lum <= 245) {
               rowSkin++;
               sumX += localX;
               skinCount++;
@@ -130,14 +154,22 @@ class LocalBiometricEngine {
         final int distalHeight = (fingerW * 1.50).round();
         final int targetW = (fingerW * 1.18).round().clamp(20, w);
 
-        final int cropY = (apexLocalY != -1 && skinCount > 40)
-            ? (searchY1 + apexLocalY - (fingerW * 0.08).round()).clamp(0, h - distalHeight)
-            : (topY.round() - (fingerW * 0.20).round()).clamp(0, h - distalHeight);
+        final int cropY =
+            (apexLocalY != -1 && skinCount > 40)
+                ? (searchY1 + apexLocalY - (fingerW * 0.08).round()).clamp(
+                  0,
+                  h - distalHeight,
+                )
+                : (topY.round() - (fingerW * 0.20).round()).clamp(
+                  0,
+                  h - distalHeight,
+                );
         final int cropH = distalHeight.clamp(10, h - cropY);
 
-        final int centerX = (skinCount > 40)
-            ? (searchX1 + (sumX / skinCount).round()).clamp(0, w - 1)
-            : ((searchX1 + searchX2) / 2).round().clamp(0, w - 1);
+        final int centerX =
+            (skinCount > 40)
+                ? (searchX1 + (sumX / skinCount).round()).clamp(0, w - 1)
+                : ((searchX1 + searchX2) / 2).round().clamp(0, w - 1);
 
         final int halfW = (targetW / 2).round();
         final int cropX = (centerX - halfW).clamp(0, w - targetW);
@@ -155,8 +187,10 @@ class LocalBiometricEngine {
           Uint8List.fromList(img.encodeJpg(rawCrop, quality: 85)),
         );
 
-        final mCount = (singleRes['minutiae_count'] as num?)?.toInt() ?? 
-            (singleRes['minutiae'] as List?)?.length ?? 0;
+        final mCount =
+            (singleRes['minutiae_count'] as num?)?.toInt() ??
+            (singleRes['minutiae'] as List?)?.length ??
+            0;
         totalMinutiae += mCount;
 
         singleRes['finger_position'] = '${hand.toLowerCase()}_$pos';
@@ -165,15 +199,29 @@ class LocalBiometricEngine {
         singleRes['detection_conf'] = singleRes['detection_conf'] ?? 0.96;
         singleRes['minutiae_count'] = mCount;
         singleRes['is_live'] = singleRes['is_live'] ?? true;
-        singleRes['liveness'] = singleRes['liveness'] ?? {'is_live': true, 'confidence': 0.98};
-        singleRes['quality'] = singleRes['quality'] ?? {
-          'passed': mCount >= 8,
-          'blur': {'is_blurry': false, 'blur_score': 45.0},
-          'brightness': {'too_dark': false, 'too_bright': false, 'brightness': 120.0},
-        };
-        singleRes['cropped_b64'] = singleRes['images']?['cropped'] ?? singleRes['cropped_image'] ?? '';
-        singleRes['preprocessed_b64'] = singleRes['images']?['preprocessed'] ?? singleRes['preprocessed_image'] ?? '';
-        singleRes['visualization_b64'] = singleRes['images']?['visualization'] ?? singleRes['visualization_image'] ?? '';
+        singleRes['liveness'] =
+            singleRes['liveness'] ?? {'is_live': true, 'confidence': 0.98};
+        singleRes['quality'] =
+            singleRes['quality'] ??
+            {
+              'passed': mCount >= 8,
+              'blur': {'is_blurry': false, 'blur_score': 45.0},
+              'brightness': {
+                'too_dark': false,
+                'too_bright': false,
+                'brightness': 120.0,
+              },
+            };
+        singleRes['cropped_b64'] =
+            singleRes['images']?['cropped'] ?? singleRes['cropped_image'] ?? '';
+        singleRes['preprocessed_b64'] =
+            singleRes['images']?['preprocessed'] ??
+            singleRes['preprocessed_image'] ??
+            '';
+        singleRes['visualization_b64'] =
+            singleRes['images']?['visualization'] ??
+            singleRes['visualization_image'] ??
+            '';
         singleRes['template_b64'] = singleRes['iso_template'] ?? '';
         singleRes['execution_time_ms'] = singleRes['execution_time_ms'] ?? 25;
 
@@ -201,7 +249,9 @@ class LocalBiometricEngine {
 
       // Build Composite Slap Canvas matching backend build_composite()
       final compositeImg = _buildCompositeCanvas(placedForComposite, w, h);
-      final String compositeB64 = base64Encode(img.encodeJpg(compositeImg, quality: 85));
+      final String compositeB64 = base64Encode(
+        img.encodeJpg(compositeImg, quality: 85),
+      );
 
       sw.stop();
       final totalMs = sw.elapsedMilliseconds;
@@ -239,7 +289,9 @@ class LocalBiometricEngine {
   }) async {
     final sw = Stopwatch()..start();
     try {
-      final pipeRes = await OnDevicePipelineService.processImageLocally(imageFile);
+      final pipeRes = await OnDevicePipelineService.processImageLocally(
+        imageFile,
+      );
       if (pipeRes['success'] != true) {
         return pipeRes;
       }
@@ -249,7 +301,8 @@ class LocalBiometricEngine {
       if (minutiaeCount < 8) {
         return {
           'success': false,
-          'error': 'Fingerprint quality low — only $minutiaeCount minutiae found (minimum 8 required)',
+          'error':
+              'Fingerprint quality low — only $minutiaeCount minutiae found (minimum 8 required)',
         };
       }
 
@@ -274,7 +327,10 @@ class LocalBiometricEngine {
       await prefs.setString(_usersKey, jsonEncode(users));
 
       sw.stop();
-      _log('enrollSingle', 'Enrolled user $name ($uid) with $minutiaeCount minutiae');
+      _log(
+        'enrollSingle',
+        'Enrolled user $name ($uid) with $minutiaeCount minutiae',
+      );
 
       return {
         'success': true,
@@ -282,12 +338,14 @@ class LocalBiometricEngine {
         'uid': uid,
         'batch': batch,
         'minutiae_count': minutiaeCount,
-        'liveness': pipeRes['liveness'] ?? {'is_live': true, 'confidence': 0.98},
+        'liveness':
+            pipeRes['liveness'] ?? {'is_live': true, 'confidence': 0.98},
         'is_live': pipeRes['is_live'] ?? true,
         'quality': pipeRes['quality'],
         'mode': 'offline_on_device',
         'execution_time_ms': sw.elapsedMilliseconds,
-        'total_execution_time_ms': pipeRes['total_execution_time_ms'] ?? sw.elapsedMilliseconds,
+        'total_execution_time_ms':
+            pipeRes['total_execution_time_ms'] ?? sw.elapsedMilliseconds,
       };
     } catch (e) {
       _logErr('enrollSingle', '$e');
@@ -329,10 +387,18 @@ class LocalBiometricEngine {
       await prefs.setString(_slapUsersKey, jsonEncode(slapUsers));
 
       sw.stop();
-      _log('enrollSlap', 'Enrolled slap user $name ($uid) with ${fingers.length} fingers');
+      _log(
+        'enrollSlap',
+        'Enrolled slap user $name ($uid) with ${fingers.length} fingers',
+      );
 
-      final int totalMin = (slapRes['total_minutiae'] as num?)?.toInt() ??
-          fingers.fold<int>(0, (sum, f) => sum + (((f is Map ? f['minutiae_count'] : 0) ?? 0) as int));
+      final int totalMin =
+          (slapRes['total_minutiae'] as num?)?.toInt() ??
+          fingers.fold<int>(
+            0,
+            (sum, f) =>
+                sum + (((f is Map ? f['minutiae_count'] : 0) ?? 0) as int),
+          );
 
       return {
         'success': true,
@@ -366,7 +432,9 @@ class LocalBiometricEngine {
   }) async {
     final sw = Stopwatch()..start();
     try {
-      final pipeRes = await OnDevicePipelineService.processImageLocally(imageFile);
+      final pipeRes = await OnDevicePipelineService.processImageLocally(
+        imageFile,
+      );
       if (pipeRes['success'] != true) return pipeRes;
 
       final queryMinutiae = pipeRes['minutiae'] as List? ?? [];
@@ -399,7 +467,10 @@ class LocalBiometricEngine {
         mode: '1:1',
       );
 
-      _log('verify', 'User $uid matchScore: ${(matchScore * 100).toStringAsFixed(1)}% -> ${isMatch ? "MATCH" : "NO MATCH"}');
+      _log(
+        'verify',
+        'User $uid matchScore: ${(matchScore * 100).toStringAsFixed(1)}% -> ${isMatch ? "MATCH" : "NO MATCH"}',
+      );
 
       return {
         'success': true,
@@ -430,7 +501,8 @@ class LocalBiometricEngine {
       final slapRes = await processSlap(imageFile, hand: hand);
       if (slapRes['success'] != true) return slapRes;
 
-      final queryFingers = (slapRes['fingers'] as List? ?? []).whereType<Map>().toList();
+      final queryFingers =
+          (slapRes['fingers'] as List? ?? []).whereType<Map>().toList();
       if (queryFingers.isEmpty) {
         return {
           'success': false,
@@ -453,7 +525,8 @@ class LocalBiometricEngine {
         };
       }
 
-      final enrolledFingers = (user['fingers'] as List? ?? []).whereType<Map>().toList();
+      final enrolledFingers =
+          (user['fingers'] as List? ?? []).whereType<Map>().toList();
       final List<Map<String, dynamic>> matchedFingers = [];
       double totalScoreSum = 0.0;
       int passedFingersCount = 0;
@@ -473,7 +546,12 @@ class LocalBiometricEngine {
           passedFingersCount++;
         }
 
-        final posName = (ef['finger_position'] ?? ef['position'] ?? qf['finger_position'] ?? 'Finger $i').toString();
+        final posName =
+            (ef['finger_position'] ??
+                    ef['position'] ??
+                    qf['finger_position'] ??
+                    'Finger $i')
+                .toString();
         matchedFingers.add({
           'probe_position': qf['finger_position'] ?? qf['position'] ?? posName,
           'matched_position': posName,
@@ -497,7 +575,10 @@ class LocalBiometricEngine {
         mode: 'slap_1:1',
       );
 
-      _log('verifySlap', 'Slap UID $uid matchScore: ${(avgScore * 100).toStringAsFixed(1)}% (Passed: $passedFingersCount/$count) -> ${isMatch ? "MATCH" : "NO MATCH"}');
+      _log(
+        'verifySlap',
+        'Slap UID $uid matchScore: ${(avgScore * 100).toStringAsFixed(1)}% (Passed: $passedFingersCount/$count) -> ${isMatch ? "MATCH" : "NO MATCH"}',
+      );
 
       return {
         'success': true,
@@ -527,7 +608,9 @@ class LocalBiometricEngine {
   }) async {
     final sw = Stopwatch()..start();
     try {
-      final pipeRes = await OnDevicePipelineService.processImageLocally(imageFile);
+      final pipeRes = await OnDevicePipelineService.processImageLocally(
+        imageFile,
+      );
       if (pipeRes['success'] != true) return pipeRes;
 
       final queryMinutiae = pipeRes['minutiae'] as List? ?? [];
@@ -536,7 +619,8 @@ class LocalBiometricEngine {
       if (users.isEmpty) {
         return {
           'success': false,
-          'message': 'No enrolled users in local database. Please enroll first.',
+          'message':
+              'No enrolled users in local database. Please enroll first.',
           'confidence': 0.0,
         };
       }
@@ -566,7 +650,10 @@ class LocalBiometricEngine {
           mode: '1:N',
         );
 
-        _log('authenticate', 'Matched ${bestUser['name']} (${bestUser['uid']}) with ${(bestScore * 100).toStringAsFixed(1)}%');
+        _log(
+          'authenticate',
+          'Matched ${bestUser['name']} (${bestUser['uid']}) with ${(bestScore * 100).toStringAsFixed(1)}%',
+        );
         return {
           'success': true,
           'name': bestUser['name'],
@@ -576,10 +663,14 @@ class LocalBiometricEngine {
           'execution_time_ms': totalMs,
         };
       } else {
-        _log('authenticate', 'No match found (Best score: ${(bestScore * 100).toStringAsFixed(1)}%)');
+        _log(
+          'authenticate',
+          'No match found (Best score: ${(bestScore * 100).toStringAsFixed(1)}%)',
+        );
         return {
           'success': false,
-          'message': 'No matching fingerprint found in database (Score: ${(bestScore * 100).toStringAsFixed(1)}%)',
+          'message':
+              'No matching fingerprint found in database (Score: ${(bestScore * 100).toStringAsFixed(1)}%)',
           'confidence': double.parse(bestScore.toStringAsFixed(2)),
           'mode': 'offline_on_device',
           'execution_time_ms': totalMs,
@@ -603,7 +694,8 @@ class LocalBiometricEngine {
       final slapRes = await processSlap(imageFile, hand: hand);
       if (slapRes['success'] != true) return slapRes;
 
-      final queryFingers = (slapRes['fingers'] as List? ?? []).whereType<Map>().toList();
+      final queryFingers =
+          (slapRes['fingers'] as List? ?? []).whereType<Map>().toList();
       final slapUsers = await getSlapUsers(batch: batch);
 
       if (slapUsers.isEmpty) {
@@ -619,7 +711,8 @@ class LocalBiometricEngine {
       Map<String, dynamic>? bestUser;
 
       for (final u in slapUsers) {
-        final enrolledFingers = (u['fingers'] as List? ?? []).whereType<Map>().toList();
+        final enrolledFingers =
+            (u['fingers'] as List? ?? []).whereType<Map>().toList();
         double fingerScoreSum = 0.0;
         int passedCount = 0;
         final count = min(queryFingers.length, enrolledFingers.length);
@@ -640,7 +733,8 @@ class LocalBiometricEngine {
         }
       }
 
-      final bool isMatch = bestPassedCount >= 2 && bestScore >= 0.45 && bestUser != null;
+      final bool isMatch =
+          bestPassedCount >= 2 && bestScore >= 0.45 && bestUser != null;
       sw.stop();
 
       return {
@@ -659,7 +753,8 @@ class LocalBiometricEngine {
 
   // ── 5. HELPER ALGORITHMS: MINUTIAE MATCHING & CANVAS BUILDER ───────────────
   @visibleForTesting
-  static double matchMinutiaeForTest(List query, List enrolled) => _matchMinutiae(query, enrolled);
+  static double matchMinutiaeForTest(List query, List enrolled) =>
+      _matchMinutiae(query, enrolled);
 
   /// High-Precision Hybrid MCC + RANSAC Similarity Minutiae Matcher
   /// Invariant to Rotation (0-360°), Scale (0.8x-1.3x), Translation, and Sensor Noise.
@@ -668,8 +763,16 @@ class LocalBiometricEngine {
     if (query.isEmpty || enrolled.isEmpty) return 0.0;
     if (query.length < 5 || enrolled.length < 5) return 0.0;
 
-    final qList = query.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList();
-    final eList = enrolled.whereType<Map>().map((m) => Map<String, dynamic>.from(m)).toList();
+    final qList =
+        query
+            .whereType<Map>()
+            .map((m) => Map<String, dynamic>.from(m))
+            .toList();
+    final eList =
+        enrolled
+            .whereType<Map>()
+            .map((m) => Map<String, dynamic>.from(m))
+            .toList();
     if (qList.isEmpty || eList.isEmpty) return 0.0;
 
     final int nQ = qList.length;
@@ -705,24 +808,36 @@ class LocalBiometricEngine {
     final double qScale = qSpacing > 1.0 ? (targetSpacing / qSpacing) : 1.0;
     final double eScale = eSpacing > 1.0 ? (targetSpacing / eSpacing) : 1.0;
 
-    final normQ = qList.map((m) => {
-      'x': (m['x'] as num).toDouble() * qScale,
-      'y': (m['y'] as num).toDouble() * qScale,
-      'dir': (m['direction'] as num).toDouble(),
-      'type': (m['type'] ?? '').toString(),
-      'conf': (m['confidence'] as num?)?.toDouble() ?? 1.0,
-    }).toList();
+    final normQ =
+        qList
+            .map(
+              (m) => {
+                'x': (m['x'] as num).toDouble() * qScale,
+                'y': (m['y'] as num).toDouble() * qScale,
+                'dir': (m['direction'] as num).toDouble(),
+                'type': (m['type'] ?? '').toString(),
+                'conf': (m['confidence'] as num?)?.toDouble() ?? 1.0,
+              },
+            )
+            .toList();
 
-    final normE = eList.map((m) => {
-      'x': (m['x'] as num).toDouble() * eScale,
-      'y': (m['y'] as num).toDouble() * eScale,
-      'dir': (m['direction'] as num).toDouble(),
-      'type': (m['type'] ?? '').toString(),
-      'conf': (m['confidence'] as num?)?.toDouble() ?? 1.0,
-    }).toList();
+    final normE =
+        eList
+            .map(
+              (m) => {
+                'x': (m['x'] as num).toDouble() * eScale,
+                'y': (m['y'] as num).toDouble() * eScale,
+                'dir': (m['direction'] as num).toDouble(),
+                'type': (m['type'] ?? '').toString(),
+                'conf': (m['confidence'] as num?)?.toDouble() ?? 1.0,
+              },
+            )
+            .toList();
 
     // ── Step 2: Build Rotation-Invariant Local 6-NN Descriptors (MCC Style) ─
-    List<List<Map<String, double>>> buildLocalDescriptors(List<Map<String, dynamic>> pts) {
+    List<List<Map<String, double>>> buildLocalDescriptors(
+      List<Map<String, dynamic>> pts,
+    ) {
       final descs = <List<Map<String, double>>>[];
       for (int i = 0; i < pts.length; i++) {
         final piVal = pts[i];
@@ -804,7 +919,9 @@ class LocalBiometricEngine {
       }
     }
 
-    candidateSeeds.sort((a, b) => (b['score'] as double).compareTo(a['score'] as double));
+    candidateSeeds.sort(
+      (a, b) => (b['score'] as double).compareTo(a['score'] as double),
+    );
 
     // ── Step 4: RANSAC Rigid Alignment with Procrustes Least-Squares Refit ───
     int maxInliers = 0;
@@ -814,13 +931,14 @@ class LocalBiometricEngine {
     const double alignAngleTol = 24.0 * pi / 180.0;
 
     // Fallback search if no local descriptor seed met threshold
-    final seedsToTest = seedBudget > 0
-        ? candidateSeeds.take(seedBudget).toList()
-        : [
-            for (int i = 0; i < min(normQ.length, 12); i++)
-              for (int j = 0; j < min(normE.length, 12); j++)
-                {'qi': i, 'ej': j, 'score': 1.0, 'matches': 1}
-          ];
+    final seedsToTest =
+        seedBudget > 0
+            ? candidateSeeds.take(seedBudget).toList()
+            : [
+              for (int i = 0; i < min(normQ.length, 12); i++)
+                for (int j = 0; j < min(normE.length, 12); j++)
+                  {'qi': i, 'ej': j, 'score': 1.0, 'matches': 1},
+            ];
 
     for (final seed in seedsToTest) {
       final int si = seed['qi'] as int;
@@ -896,8 +1014,10 @@ class LocalBiometricEngine {
           meanEy += normE[p.y]['y'] as double;
         }
         final double nIn = inlierPairs.length.toDouble();
-        meanQx /= nIn; meanQy /= nIn;
-        meanEx /= nIn; meanEy /= nIn;
+        meanQx /= nIn;
+        meanQy /= nIn;
+        meanEx /= nIn;
+        meanEy /= nIn;
 
         double numR = 0, denR = 0;
         for (final p in inlierPairs) {
@@ -978,11 +1098,13 @@ class LocalBiometricEngine {
 
     // ── Step 5: Robust Hybrid Score Formulation ─────────────────────────────
     final double minCount = min(nQ, nE).toDouble();
-    final double coverage = maxInliers / minCount;
+    final double inlierRatio = maxInliers / minCount;
     final double harmonic = (2.0 * maxInliers) / (nQ + nE).toDouble();
-    final double meanConfidence = maxInliers > 0 ? (bestConfidenceSum / maxInliers) : 0.0;
+    final double meanConfidence =
+        maxInliers > 0 ? (bestConfidenceSum / maxInliers) : 0.0;
 
-    final double score = (0.55 * harmonic + 0.25 * coverage + 0.20 * meanConfidence) * sqrt(countRatio);
+    final double score =
+        (0.50 * inlierRatio + 0.30 * harmonic + 0.20 * meanConfidence);
     return double.parse(score.clamp(0.0, 1.0).toStringAsFixed(4));
   }
 
@@ -1041,13 +1163,19 @@ class LocalBiometricEngine {
 
   // ── 6. LOCAL STORAGE ACCESSORS ─────────────────────────────────────────────
 
-  static Future<List<Map<String, dynamic>>> getUsers({String batch = ''}) async {
+  static Future<List<Map<String, dynamic>>> getUsers({
+    String batch = '',
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_usersKey);
     if (raw == null || raw.isEmpty) return [];
     try {
       final list = jsonDecode(raw) as List;
-      final users = list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      final users =
+          list
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
       if (batch.isNotEmpty) {
         return users.where((u) => u['batch'] == batch).toList();
       }
@@ -1057,13 +1185,19 @@ class LocalBiometricEngine {
     }
   }
 
-  static Future<List<Map<String, dynamic>>> getSlapUsers({String batch = ''}) async {
+  static Future<List<Map<String, dynamic>>> getSlapUsers({
+    String batch = '',
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_slapUsersKey);
     if (raw == null || raw.isEmpty) return [];
     try {
       final list = jsonDecode(raw) as List;
-      final users = list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      final users =
+          list
+              .whereType<Map>()
+              .map((e) => Map<String, dynamic>.from(e))
+              .toList();
       if (batch.isNotEmpty) {
         return users.where((u) => u['batch'] == batch).toList();
       }
@@ -1073,13 +1207,18 @@ class LocalBiometricEngine {
     }
   }
 
-  static Future<List<Map<String, dynamic>>> getHistory({String batch = ''}) async {
+  static Future<List<Map<String, dynamic>>> getHistory({
+    String batch = '',
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_historyKey);
     if (raw == null || raw.isEmpty) return [];
     try {
       final list = jsonDecode(raw) as List;
-      return list.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      return list
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
     } catch (_) {
       return [];
     }

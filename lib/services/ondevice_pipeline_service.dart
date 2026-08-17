@@ -54,7 +54,7 @@ class OnDevicePipelineService {
         if (nativeRes['success'] == true) {
           final int nativeMs =
               (nativeRes['total_execution_time_ms'] as num?)?.toInt() ??
-                  sw.elapsedMilliseconds;
+              sw.elapsedMilliseconds;
           final quality = OnDeviceQualityService.evaluateYPlane(
             yPlaneBytes: bytes,
             width: 1080,
@@ -79,11 +79,13 @@ class OnDevicePipelineService {
             'quality': quality.toJson(),
             'detection_conf': quality.detectionConf,
             'liveness': livenessMap,
-            'minutiae_count': nativeRes['minutiae_count'] ??
+            'minutiae_count':
+                nativeRes['minutiae_count'] ??
                 (nativeRes['minutiae_list'] as List?)?.length ??
                 0,
             'minutiae': _deepCastList(
-                nativeRes['minutiae'] ?? nativeRes['minutiae_list'] ?? []),
+              nativeRes['minutiae'] ?? nativeRes['minutiae_list'] ?? [],
+            ),
             'iso_template': nativeRes['iso_template'] ?? '',
             'images': imagesMap,
             'total_execution_time_ms': nativeMs,
@@ -135,7 +137,8 @@ class OnDevicePipelineService {
     final String originalB64 = base64Encode(originalJpg);
 
     // Stage 2: Distal Phalanx Bounding Crop (skin heuristic)
-    final Rect box = _detectFingerBoundingBox(decoded);
+    final bool isThumb = quality.isThumb;
+    final Rect box = _detectFingerBoundingBox(decoded, isThumb: isThumb);
     final int cropX = box.left.round().clamp(0, width - 10);
     final int cropY = box.top.round().clamp(0, height - 10);
     final int cropW = box.width.round().clamp(10, width - cropX);
@@ -152,17 +155,16 @@ class OnDevicePipelineService {
     final String croppedB64 = base64Encode(croppedJpg);
 
     // Stage 3: Contact-Equivalent FIR Preprocessing
-    // Replicates backend preprocess_fingerprint() exactly:
-    //   1. Build foreground mask (ellipse heuristic — no U2-Net on Dart path)
-    //   2. CDF histogram equalization (all pixels in gray incl bg=255)
-    //   3. Adaptive mean threshold (block=15, C=1) → inv
-    //   4. apply_central_roi_erosion → final[roi==0]=255
     final preprocImg = _createContactEquivalentFIR(croppedImg);
     final preprocJpg = img.encodeJpg(preprocImg, quality: 85);
     final String preprocessedB64 = base64Encode(preprocJpg);
 
-    // Stage 4: Minutiae Feature Extraction (Morphological Crossing Number fallback)
-    final minutiaeList = _extractMinutiae(preprocImg, croppedImg);
+    // Stage 4: Minutiae Feature Extraction (High-Capacity Thumb Extraction)
+    final minutiaeList = _extractMinutiae(
+      preprocImg,
+      croppedImg,
+      isThumb: isThumb,
+    );
     final visImg = _drawMinutiaeVisualization(preprocImg, minutiaeList);
     final visJpg = img.encodeJpg(visImg, quality: 85);
     final String visB64 = base64Encode(visJpg);
@@ -208,7 +210,7 @@ class OnDevicePipelineService {
   // STAGE 2: Intelligent Distal Phalanx Bounding Box
   // Accurately localizes the distal fingertip pad with anatomical aspect ratio
   // ──────────────────────────────────────────────────────────────────────────
-  static Rect _detectFingerBoundingBox(img.Image image) {
+  static Rect _detectFingerBoundingBox(img.Image image, {bool isThumb = true}) {
     final int w = image.width;
     final int h = image.height;
     int minX = w, maxX = 0, minY = h, maxY = 0;
@@ -224,7 +226,12 @@ class OnDevicePipelineService {
         final int lum = (0.299 * r + 0.587 * g + 0.114 * b).round();
 
         // Biological tissue & skin chroma filter
-        if (r > 38 && g > 22 && r >= g && (r - b) >= 4 && lum >= 25 && lum <= 246) {
+        if (r > 38 &&
+            g > 22 &&
+            r >= g &&
+            (r - b) >= 4 &&
+            lum >= 25 &&
+            lum <= 246) {
           if (x < minX) minX = x;
           if (x > maxX) maxX = x;
           if (y < minY) minY = y;
@@ -236,17 +243,23 @@ class OnDevicePipelineService {
     }
 
     if (count < 80 || minX >= maxX || minY >= maxY) {
-      final int cw = (w * 0.48).round();
-      final int ch = (h * 0.54).round();
-      return Rect.fromLTWH(((w - cw) / 2), (h * 0.18), cw.toDouble(), ch.toDouble());
+      final int cw = (w * (isThumb ? 0.55 : 0.48)).round();
+      final int ch = (h * (isThumb ? 0.52 : 0.54)).round();
+      return Rect.fromLTWH(
+        ((w - cw) / 2),
+        (h * 0.18),
+        cw.toDouble(),
+        ch.toDouble(),
+      );
     }
 
     final double meanX = sumX / count;
     final int tipWidth = max(28, maxX - minX);
-    // Standard distal phalanx biometric aspect ratio (1 : 1.32)
-    final int distalHeight = (tipWidth * 1.32).round();
-    final int padX = (tipWidth * 0.08).round();
-    final int padTop = (tipWidth * 0.05).round();
+    // Aspect ratio: full thumb pad extends down to interphalangeal crease (1 : 1.35)
+    final double aspectMultiplier = isThumb ? 1.35 : 1.32;
+    final int distalHeight = (tipWidth * aspectMultiplier).round();
+    final int padX = (tipWidth * (isThumb ? 0.15 : 0.08)).round();
+    final int padTop = (tipWidth * 0.06).round();
 
     // Center crop horizontally around the tissue centroid
     final int targetW = min(w, tipWidth + (padX * 2));
@@ -257,8 +270,10 @@ class OnDevicePipelineService {
     final int cropY2 = min(h, cropY1 + distalHeight);
 
     return Rect.fromLTRB(
-      cropX1.toDouble(), cropY1.toDouble(),
-      cropX2.toDouble(), cropY2.toDouble(),
+      cropX1.toDouble(),
+      cropY1.toDouble(),
+      cropX2.toDouble(),
+      cropY2.toDouble(),
     );
   }
 
@@ -293,9 +308,13 @@ class OnDevicePipelineService {
         final int r = p.r.toInt();
         final int g = p.g.toInt();
         final int b = p.b.toInt();
-        final int lum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(0, 255);
+        final int lum = (0.299 * r + 0.587 * g + 0.114 * b).round().clamp(
+          0,
+          255,
+        );
 
-        final bool isTissue = inEllipse && (lum >= 18 && lum <= 248) && (r >= g - 5);
+        final bool isTissue =
+            inEllipse && (lum >= 18 && lum <= 248) && (r >= g - 5);
         maskBytes[y * w + x] = isTissue ? 1 : 0;
       }
     }
@@ -310,7 +329,11 @@ class OnDevicePipelineService {
         final int px = idx % w;
         final int py = idx ~/ w;
         final p = src.getPixel(px, py);
-        rawGray[idx] = (0.299 * p.r.toInt() + 0.587 * p.g.toInt() + 0.114 * p.b.toInt()).round().clamp(0, 255);
+        rawGray[idx] = (0.299 * p.r.toInt() +
+                0.587 * p.g.toInt() +
+                0.114 * p.b.toInt())
+            .round()
+            .clamp(0, 255);
       } else {
         rawGray[idx] = 255;
       }
@@ -339,10 +362,15 @@ class OnDevicePipelineService {
       minCdf = max(1, minCdf);
       final int denom = max(1, fgCount - minCdf);
       for (int i = 0; i < 256; i++) {
-        lut[i] = cdf[i] == 0 ? 0 : (((cdf[i] - minCdf) * 255) / denom).round().clamp(0, 255);
+        lut[i] =
+            cdf[i] == 0
+                ? 0
+                : (((cdf[i] - minCdf) * 255) / denom).round().clamp(0, 255);
       }
     } else {
-      for (int i = 0; i < 256; i++) { lut[i] = i; }
+      for (int i = 0; i < 256; i++) {
+        lut[i] = i;
+      }
     }
 
     final Uint8List eqGray = Uint8List(w * h);
@@ -360,10 +388,22 @@ class OnDevicePipelineService {
         if (cleanMask[idx] == 0) continue;
 
         // Sobel gradients
-        final double gx = ((eqGray[(y - 1) * w + (x + 1)] + 2 * eqGray[y * w + (x + 1)] + eqGray[(y + 1) * w + (x + 1)]) -
-                          (eqGray[(y - 1) * w + (x - 1)] + 2 * eqGray[y * w + (x - 1)] + eqGray[(y + 1) * w + (x - 1)])).toDouble();
-        final double gy = ((eqGray[(y + 1) * w + (x - 1)] + 2 * eqGray[(y + 1) * w + x] + eqGray[(y + 1) * w + (x + 1)]) -
-                          (eqGray[(y - 1) * w + (x - 1)] + 2 * eqGray[(y - 1) * w + x] + eqGray[(y - 1) * w + (x + 1)])).toDouble();
+        final double gx =
+            ((eqGray[(y - 1) * w + (x + 1)] +
+                        2 * eqGray[y * w + (x + 1)] +
+                        eqGray[(y + 1) * w + (x + 1)]) -
+                    (eqGray[(y - 1) * w + (x - 1)] +
+                        2 * eqGray[y * w + (x - 1)] +
+                        eqGray[(y + 1) * w + (x - 1)]))
+                .toDouble();
+        final double gy =
+            ((eqGray[(y + 1) * w + (x - 1)] +
+                        2 * eqGray[(y + 1) * w + x] +
+                        eqGray[(y + 1) * w + (x + 1)]) -
+                    (eqGray[(y - 1) * w + (x - 1)] +
+                        2 * eqGray[(y - 1) * w + x] +
+                        eqGray[(y - 1) * w + (x + 1)]))
+                .toDouble();
 
         final double gxx = gx * gx;
         final double gyy = gy * gy;
@@ -400,14 +440,18 @@ class OnDevicePipelineService {
           tangentSum += eqGray[ny * w + nx];
           tCount++;
         }
-        final double tVal = tCount > 0 ? (tangentSum / tCount) : eqGray[idx].toDouble();
+        final double tVal =
+            tCount > 0 ? (tangentSum / tCount) : eqGray[idx].toDouble();
 
         // High-pass sharpening across orthogonal normal
         final int ox1 = (x - (2 * -sinT).round()).clamp(0, w - 1);
         final int oy1 = (y - (2 * cosT).round()).clamp(0, h - 1);
         final int ox2 = (x + (2 * -sinT).round()).clamp(0, w - 1);
         final int oy2 = (y + (2 * cosT).round()).clamp(0, h - 1);
-        final double orthoGrad = 2.0 * tVal - 0.5 * eqGray[oy1 * w + ox1] - 0.5 * eqGray[oy2 * w + ox2];
+        final double orthoGrad =
+            2.0 * tVal -
+            0.5 * eqGray[oy1 * w + ox1] -
+            0.5 * eqGray[oy2 * w + ox2];
 
         enhancedGray[idx] = orthoGrad.round().clamp(0, 255);
       }
@@ -443,7 +487,8 @@ class OnDevicePipelineService {
         final int x1 = max(0, x - radius);
         final int x2 = min(w, x + radius + 1);
         final int count = (x2 - x1) * (y2 - y1);
-        final int boxSum = integral[y2 * (w + 1) + x2] -
+        final int boxSum =
+            integral[y2 * (w + 1) + x2] -
             integral[y1 * (w + 1) + x2] -
             integral[y2 * (w + 1) + x1] +
             integral[y1 * (w + 1) + x1];
@@ -489,7 +534,9 @@ class OnDevicePipelineService {
       }
     }
 
-    final int ep = (min(h, w) * 0.12).round(); // Conservative erosion to protect peripheral minutiae
+    final int ep =
+        (min(h, w) * 0.12)
+            .round(); // Conservative erosion to protect peripheral minutiae
     if (ep <= 1) return hm;
 
     return _morphErode(hm, w, h, ep);
@@ -552,8 +599,9 @@ class OnDevicePipelineService {
   // ──────────────────────────────────────────────────────────────────────────
   static List<Map<String, dynamic>> _extractMinutiae(
     img.Image preproc,
-    img.Image origCrop,
-  ) {
+    img.Image origCrop, {
+    bool isThumb = true,
+  }) {
     final int w = preproc.width;
     final int h = preproc.height;
     if (w < 30 || h < 30) return [];
@@ -574,7 +622,7 @@ class OnDevicePipelineService {
 
     // Dilate tissue mask to cover inter-ridge valleys
     final Uint8List dilatedTissue = _morphDilate(tissueMask, w, h, 9);
-    
+
     // Compute distance transform to mask boundary for strict edge gating
     final Float32List distToBg = Float32List(w * h);
     for (int y = 0; y < h; y++) {
@@ -584,13 +632,22 @@ class OnDevicePipelineService {
           distToBg[idx] = 0.0;
         } else {
           // Distance to 4 borders
-          distToBg[idx] = [x, w - 1 - x, y, h - 1 - y].map((e) => e.toDouble()).reduce(min);
+          distToBg[idx] = [
+            x,
+            w - 1 - x,
+            y,
+            h - 1 - y,
+          ].map((e) => e.toDouble()).reduce(min);
         }
       }
     }
 
     // 2. Zhang-Suen Morphological Skeletonization (Thinning)
-    final Uint8List skeleton = _zhangSuenThinning(Uint8List.fromList(binary), w, h);
+    final Uint8List skeleton = _zhangSuenThinning(
+      Uint8List.fromList(binary),
+      w,
+      h,
+    );
 
     // 3. Crossing Number on Skeleton inside Valid Region with Path-Traced Angles
     final List<Map<String, dynamic>> rawCandidates = [];
@@ -652,10 +709,14 @@ class OnDevicePipelineService {
           }
 
           if (pathLen >= 2) {
-            final double angle = atan2((currY - y).toDouble(), (currX - x).toDouble());
+            final double angle = atan2(
+              (currY - y).toDouble(),
+              (currX - x).toDouble(),
+            );
             final double cx = w / 2.0;
             final double cy = h / 2.0;
-            final double normDist = sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
+            final double normDist =
+                sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
             final double qual = (0.98 - normDist * 0.12).clamp(0.78, 0.98);
 
             rawCandidates.add({
@@ -694,7 +755,8 @@ class OnDevicePipelineService {
                 for (int i = 0; i < 8; i++) {
                   final nx = (currX + dx[i]).clamp(0, w - 1);
                   final ny = (currY + dy[i]).clamp(0, h - 1);
-                  if (skeleton[ny * w + nx] == 1 && !(nx == prevX && ny == prevY)) {
+                  if (skeleton[ny * w + nx] == 1 &&
+                      !(nx == prevX && ny == prevY)) {
                     nextX = nx;
                     nextY = ny;
                     break;
@@ -709,7 +771,9 @@ class OnDevicePipelineService {
               }
 
               if (bLen < shortestBranch) shortestBranch = bLen;
-              branchAngles.add(atan2((currY - y).toDouble(), (currX - x).toDouble()));
+              branchAngles.add(
+                atan2((currY - y).toDouble(), (currX - x).toDouble()),
+              );
             }
 
             if (shortestBranch >= 2) {
@@ -722,7 +786,8 @@ class OnDevicePipelineService {
               final double angle = atan2(sumSin, sumCos);
               final double cx = w / 2.0;
               final double cy = h / 2.0;
-              final double normDist = sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
+              final double normDist =
+                  sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
               final double qual = (0.98 - normDist * 0.12).clamp(0.78, 0.98);
 
               rawCandidates.add({
@@ -739,10 +804,13 @@ class OnDevicePipelineService {
     }
 
     // 4. Topological Filter: Suppress false opposing endings and dense noise clusters
-    final List<Map<String, dynamic>> filtered = _filterSpuriousMinutiae(rawCandidates);
+    final List<Map<String, dynamic>> filtered = _filterSpuriousMinutiae(
+      rawCandidates,
+    );
 
-    // 5. Uniform Multi-Grid Spatial NMS (target up to 85 verified minutiae)
-    return _uniformSpatialNms(filtered, w, h, 85);
+    // 5. Uniform Multi-Grid Spatial NMS (target up to 120 minutiae for thumb, 85 for others)
+    final int targetMinutiae = isThumb ? 120 : 85;
+    return _uniformSpatialNms(filtered, w, h, targetMinutiae, isThumb: isThumb);
   }
 
   static List<Map<String, dynamic>> _filterSpuriousMinutiae(
@@ -794,7 +862,8 @@ class OnDevicePipelineService {
         }
 
         // 3. Dense cluster count
-        if (dSq <= 144) { // within 12px
+        if (dSq <= 144) {
+          // within 12px
           clusterCount++;
         }
       }
@@ -895,15 +964,19 @@ class OnDevicePipelineService {
     List<Map<String, dynamic>> candidates,
     int w,
     int h,
-    int maxPoints,
-  ) {
+    int maxPoints, {
+    bool isThumb = true,
+  }) {
     if (candidates.isEmpty) return [];
 
-    candidates.sort((a, b) => ((b['confidence'] as num?) ?? 0)
-        .compareTo((a['confidence'] as num?) ?? 0));
+    candidates.sort(
+      (a, b) => ((b['confidence'] as num?) ?? 0).compareTo(
+        (a['confidence'] as num?) ?? 0,
+      ),
+    );
 
-    const int gridCols = 6;
-    const int gridRows = 6;
+    final int gridCols = isThumb ? 7 : 6;
+    final int gridRows = isThumb ? 7 : 6;
     final double cellW = w / gridCols;
     final double cellH = h / gridRows;
 
@@ -920,16 +993,22 @@ class OnDevicePipelineService {
 
     for (int gy = 0; gy < gridRows; gy++) {
       for (int gx = 0; gx < gridCols; gx++) {
-        buckets[gy][gx].sort((a, b) => ((b['confidence'] as num?) ?? 0)
-            .compareTo((a['confidence'] as num?) ?? 0));
+        buckets[gy][gx].sort(
+          (a, b) => ((b['confidence'] as num?) ?? 0).compareTo(
+            (a['confidence'] as num?) ?? 0,
+          ),
+        );
       }
     }
 
-    final double minDistance = max(6.0, min(w, h) * 0.024);
+    final double minDistance =
+        isThumb ? max(5.0, min(w, h) * 0.018) : max(6.0, min(w, h) * 0.024);
     final double minDistSq = minDistance * minDistance;
-    const int maxPerBucket = 6;
-    final List<List<int>> bucketCounts =
-        List.generate(gridRows, (_) => List.filled(gridCols, 0));
+    final int maxPerBucket = isThumb ? 7 : 6;
+    final List<List<int>> bucketCounts = List.generate(
+      gridRows,
+      (_) => List.filled(gridCols, 0),
+    );
 
     final List<Map<String, dynamic>> selected = [];
     bool addedInRound = true;
@@ -988,8 +1067,7 @@ class OnDevicePipelineService {
     List<Map<String, dynamic>> minutiae,
   ) {
     final vis = img.Image.from(preproc);
-    final double diag =
-        sqrt(vis.width * vis.width + vis.height * vis.height);
+    final double diag = sqrt(vis.width * vis.width + vis.height * vis.height);
     final int centerDot = max(1, (diag * 0.003).round());
     final int outerRadius = max(4, (diag * 0.010).round());
     final int arrowLen = max(10, (diag * 0.024).round());
@@ -1052,8 +1130,7 @@ class OnDevicePipelineService {
       final int y = (m['y'] as num).toInt().clamp(0, 65535);
       final double dir = (m['direction'] as num).toDouble();
       final int angle = (((dir + pi) / (2 * pi)) * 255).round().clamp(0, 255);
-      final int type =
-          (m['type']?.toString().contains('RIG') == true) ? 1 : 2;
+      final int type = (m['type']?.toString().contains('RIG') == true) ? 1 : 2;
 
       bd.setUint16(offset, x, Endian.big);
       bd.setUint16(offset + 2, y, Endian.big);

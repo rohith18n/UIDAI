@@ -72,8 +72,8 @@ object MinutiaeExtractor {
             }
         }
 
-        // Erode tissue mask by 8 pixels (preserves valid core/delta while avoiding boundary cuts)
-        val validRegion = erodeMask(tissueMask, width, height, radius = 8)
+        // Erode tissue mask by 4 pixels (preserves valid core/delta and full pad while avoiding boundary cuts)
+        val validRegion = erodeMask(tissueMask, width, height, radius = 4)
 
         // ── 3. Zhang-Suen Morphological Skeletonization (Thinning) ────────────
         val skeleton = zhangSuenThinning(binary.copyOf(), width, height)
@@ -87,7 +87,7 @@ object MinutiaeExtractor {
         val dx = intArrayOf(0, 1, 1, 1, 0, -1, -1, -1)
         val dy = intArrayOf(-1, -1, 0, 1, 1, 1, 0, -1)
 
-        val margin = 8
+        val margin = 5
         for (y in margin until height - margin) {
             for (x in margin until width - margin) {
                 val idx = y * width + x
@@ -115,11 +115,11 @@ object MinutiaeExtractor {
                     // ── RIDGE ENDING (RIG) ──────────────────────────────────
                     // Trace single skeleton path inward along the ridge (avoiding crosstalk from other ridges)
                     val (pathLen, angle) = traceEndingRidgePath(skeleton, width, height, x, y, dx, dy)
-                    if (pathLen >= 3) {
+                    if (pathLen >= 2) {
                         val cx = width / 2.0
                         val cy = height / 2.0
                         val normDist = sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (width / 2.0)
-                        val qual = (0.98 - normDist * 0.15).coerceIn(0.75, 0.98)
+                        val qual = (0.98 - normDist * 0.12).coerceIn(0.78, 0.98)
                         rawCandidates.add(MinutiaPoint(x, y, angle, "RIG", qual))
                     }
                 } else if (cn == 3 && neighborCount == 3) {
@@ -130,7 +130,7 @@ object MinutiaeExtractor {
                         val cx = width / 2.0
                         val cy = height / 2.0
                         val normDist = sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (width / 2.0)
-                        val qual = (0.98 - normDist * 0.15).coerceIn(0.75, 0.98)
+                        val qual = (0.98 - normDist * 0.12).coerceIn(0.78, 0.98)
                         rawCandidates.add(MinutiaPoint(x, y, angle, "BIF", qual))
                     }
                 }
@@ -252,8 +252,8 @@ object MinutiaeExtractor {
             branchAngles.add(atan2((currY - startY).toDouble(), (currX - startX).toDouble()))
         }
 
-        // If any branch terminates too quickly (< 3 px), it is a spur artifact
-        if (shortestBranch < 3) return Pair(false, 0.0)
+        // If any branch terminates too quickly (< 2 px), it is a spur artifact
+        if (shortestBranch < 2) return Pair(false, 0.0)
 
         // The bifurcation orientation is the average angle pointing inward from the fork
         var sumCos = 0.0
@@ -283,19 +283,19 @@ object MinutiaeExtractor {
 
                 val dSq = (m1.x - m2.x) * (m1.x - m2.x) + (m1.y - m2.y) * (m1.y - m2.y)
 
-                // 1. Broken ridge artifact: two endings within 12px facing each other (~180° opposite)
-                if (dSq <= 144 && m1.type == "RIG" && m2.type == "RIG") {
+                // 1. Broken ridge artifact: two endings within 10px facing each other (~180° opposite)
+                if (dSq <= 100 && m1.type == "RIG" && m2.type == "RIG") {
                     var diffAngle = abs(m1.direction - m2.direction)
                     if (diffAngle > Math.PI) diffAngle = (2 * Math.PI - diffAngle)
-                    if (diffAngle > Math.PI * 0.65) {
+                    if (diffAngle > Math.PI * 0.75) {
                         keep[i] = false
                         keep[j] = false
                         break
                     }
                 }
 
-                // 2. Overlapping duplicate minutiae within 8px
-                if (dSq <= 64) {
+                // 2. Overlapping duplicate minutiae within 5px
+                if (dSq <= 25) {
                     if (m1.quality >= m2.quality) {
                         keep[j] = false
                     } else {
@@ -437,9 +437,9 @@ object MinutiaeExtractor {
     ): List<MinutiaPoint> {
         if (candidates.isEmpty()) return emptyList()
 
-        // 1. Grid of spatial buckets (5 cols x 5 rows)
-        val gridCols = 5
-        val gridRows = 5
+        // 1. Grid of spatial buckets (7 cols x 7 rows)
+        val gridCols = 7
+        val gridRows = 7
         val cellW = w / gridCols.toDouble()
         val cellH = h / gridRows.toDouble()
 
@@ -457,19 +457,19 @@ object MinutiaeExtractor {
             }
         }
 
-        // 2. Minimum distance threshold between any two minutiae points (10px or 3.5% of dimension)
-        val minDistance = max(10.0, (min(w, h) * 0.035).toDouble())
+        // 2. Minimum distance threshold between any two minutiae points (5px or 1.8% of dimension)
+        val minDistance = max(5.0, (min(w, h) * 0.018).toDouble())
         val minDistSq = minDistance * minDistance
 
         // 3. Maximum points per grid bucket
-        val maxPerBucket = 5
+        val maxPerBucket = 7
         val bucketCounts = Array(gridRows) { IntArray(gridCols) }
 
         val selected = mutableListOf<MinutiaPoint>()
         var addedInRound = true
         var round = 0
 
-        while (selected.size < maxPoints && addedInRound && round < 10) {
+        while (selected.size < maxPoints && addedInRound && round < 15) {
             addedInRound = false
             round++
 

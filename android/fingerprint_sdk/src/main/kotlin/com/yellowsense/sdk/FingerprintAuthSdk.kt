@@ -137,16 +137,18 @@ class FingerprintAuthSdk(private val context: Context) {
             // Stage 1: Quality Check
             val quality = OpencvImageProcessor.assessQuality(bitmap)
 
-            // Stage 2: YOLO Detection with fallback to Distal Crop
+            // Stage 2: Robust Full-Thumb Distal Pad Crop
             val yoloDets = tfliteEngine.detectFingers(bitmap, confThreshold = 0.18f)
             val croppedBitmap = if (yoloDets.isNotEmpty()) {
                 val best = yoloDets.maxByOrNull { it.confidence }!!.boundingBox
-                val padX = (best.width() * 0.06f).toInt()
-                val padY = (best.height() * 0.06f).toInt()
+                // Expand YOLO box to encompass the full bulbous thumb pad down to the flexion crease
+                val padX = (best.width() * 0.15f).toInt()
+                val padTop = (best.height() * 0.08f).toInt()
+                val padBottom = (best.height() * 0.38f).toInt() // Captures lower core, deltas, and crease
                 val x1 = max(0, best.left.toInt() - padX)
-                val y1 = max(0, best.top.toInt() - padY)
+                val y1 = max(0, best.top.toInt() - padTop)
                 val x2 = min(bitmap.width, best.right.toInt() + padX)
-                val y2 = min(bitmap.height, best.bottom.toInt() + padY)
+                val y2 = min(bitmap.height, best.bottom.toInt() + padBottom)
                 val cw = max(10, x2 - x1)
                 val ch = max(10, y2 - y1)
                 Bitmap.createBitmap(bitmap, x1, y1, cw, ch)
@@ -161,10 +163,13 @@ class FingerprintAuthSdk(private val context: Context) {
             // Stage 4: Liveness Verification
             val liveness = tfliteEngine.evaluateLiveness(croppedBitmap)
 
-            // Stage 5: Minutiae Feature Extraction via Neural MinutiaeNet (matching backend)
-            var minutiaeList = tfliteEngine.extractMinutiaeNet(preprocessedBitmap, threshold = 0.28f)
-            if (minutiaeList.size < 8) {
-                minutiaeList = MinutiaeExtractor.extractMinutiae(preprocessedBitmap, croppedBitmap, maxPoints = 45)
+            // Stage 5: High-Density Minutiae Extraction (Skeleton Crossing Number + Neural Augmentation)
+            var minutiaeList = MinutiaeExtractor.extractMinutiae(preprocessedBitmap, croppedBitmap, maxPoints = 120)
+            if (minutiaeList.size < 30) {
+                val neural = tfliteEngine.extractMinutiaeNet(preprocessedBitmap, threshold = 0.16f, nmsSize = 3)
+                if (neural.size > minutiaeList.size) {
+                    minutiaeList = neural
+                }
             }
 
             // Stage 6: ISO/IEC 19794-2 Template Serialization
