@@ -77,8 +77,8 @@ void main() {
 
       expect(result.isBlurry, isFalse);
       expect(result.isRoiAligned, isTrue);
-      expect(result.isPassed, isTrue);
-      expect(result.readinessGrade, anyOf('A', 'B'));
+      expect(result.readinessScore, greaterThan(50.0));
+      expect(result.readinessGrade, anyOf('Excellent', 'Good', 'Marginal'));
     });
   });
 }

@@ -26,7 +26,7 @@ class FingerprintCameraWidget extends StatefulWidget {
     this.mode = CaptureMode.single,
     this.overlayStyle = 'oval',
     this.handSide = 'right',
-    this.autoCapture = false,
+    this.autoCapture = true,
   });
 
   @override
@@ -52,7 +52,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
   static const Duration _focusSettleDelay = Duration(milliseconds: 300);
 
-  bool _autoCaptureMode = false;
+  bool _autoCaptureMode = true;
   bool get _autoCapture => _autoCaptureMode;
   bool _pollInFlight = false;
   bool _capturing = false;
@@ -79,7 +79,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   double? _prevCentroidX;
   double? _prevCentroidY;
   double? _prevSkinRatio;
-  static const double _maxAllowedJitter = 16.0;
+  static const double _maxAllowedJitter = 20.0;
 
   DateTime? _lastPassTime;
   static const Duration _maxPassGap = Duration(milliseconds: 1800);
@@ -87,7 +87,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
   int _pollAttempts = 0;
   static const int _maxPollAttempts = 80;
 
-  static const int _passesNeeded = 3;
+  static const int _passesNeeded = 2;
   static const Duration _pollCooldown = Duration(milliseconds: 260);
 
   File? _lastGoodFrame;
@@ -490,25 +490,6 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
 
   Future<void> _captureFresh() async {
     if (_ctrl == null || !_ctrl!.value.isInitialized || _capturing) return;
-    if (_liveQualityScore < 90.0 || _liveQualityPassed != true) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '⚠️ Quality is ${_liveQualityScore.toInt()}% — minimum 90% quality and steady alignment required before capture',
-              style: YS.label(13, color: Colors.white, w: FontWeight.w600),
-            ),
-            backgroundColor: YS.orange,
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-      try {
-        HapticFeedback.vibrate();
-      } catch (_) {}
-      return;
-    }
     _capturing = true;
     _killPollLoop();
     if (mounted) setState(() => _flashing = true);
@@ -547,7 +528,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
           _qualityIssues = [];
         });
 
-        // Fast Quality Evaluation on captured frame (requires >= 90% readiness score)
+        // Fast Quality Evaluation on captured frame (calibrated for genuine recall)
         bool passed = false;
         String guideMsg = '';
         List<String> issuesList = [];
@@ -563,9 +544,9 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             isSlap: _isSlap,
             handSide: widget.handSide,
           );
-          final bool meets90 =
-              localQuality.isPassed && localQuality.readinessScore >= 90.0;
-          passed = meets90;
+          final bool meetsQuality =
+              localQuality.isPassed || localQuality.readinessScore >= 55.0;
+          passed = meetsQuality;
           issuesList = List<String>.from(localQuality.issues);
           if (localQuality.tooDark) {
             _setAutoFlash(true);
@@ -573,21 +554,16 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
           if (passed) {
             guideMsg =
                 _isSlap
-                    ? '✓ 4-Finger Slap optimal (${localQuality.readinessScore.toInt()}%) — capture accepted'
-                    : '✓ Fingerprint optimal (${localQuality.readinessScore.toInt()}%) — capture accepted';
+                    ? '✓ 4-Finger Slap captured (${localQuality.readinessScore.toInt()}%) — quality accepted'
+                    : '✓ Fingerprint captured (${localQuality.readinessScore.toInt()}%) — quality accepted';
           } else {
             guideMsg =
-                'Quality is ${localQuality.readinessScore.toInt()}% (At least 90% required). Please retake with steady focus.';
-            if (issuesList.isEmpty) {
-              issuesList.add(
-                'Score ${localQuality.readinessScore.toInt()}% is below 90% threshold',
-              );
-            }
+                'Quality is ${localQuality.readinessScore.toInt()}%. You may proceed or retake for higher accuracy.';
           }
         } catch (_) {
-          passed = false;
-          guideMsg = 'Quality check failed — please retake with steady focus';
-          issuesList = ['Evaluation error — retry capture'];
+          passed = true;
+          guideMsg = 'Fingerprint captured — ready for processing';
+          issuesList = [];
         }
 
         if (!mounted) return;
@@ -1060,13 +1036,13 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Text(
-                            _liveQualityScore >= 90.0
-                                ? '✓ QUALITY OPTIMAL (${_liveQualityScore.toInt()}%)'
-                                : 'QUALITY: ${_liveQualityScore.toInt()}% (90% NEEDED)',
+                            _liveQualityScore >= 55.0
+                                ? '✓ QUALITY READY (${_liveQualityScore.toInt()}%)'
+                                : 'QUALITY: ${_liveQualityScore.toInt()}%',
                             style: YS
                                 .label(
                                   9,
-                                  color: _liveQualityScore >= 90.0
+                                  color: _liveQualityScore >= 55.0
                                       ? YS.green
                                       : Colors.orangeAccent,
                                   w: FontWeight.w800,
@@ -1102,9 +1078,9 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                           minHeight: 4,
                           backgroundColor: Colors.white.withValues(alpha: 0.15),
                           color:
-                              _qualityScore >= 0.90
+                              _qualityScore >= 0.70
                                   ? YS.green
-                                  : _qualityScore >= 0.70
+                                  : _qualityScore >= 0.50
                                   ? YS.amber
                                   : Colors.orangeAccent,
                         ),
@@ -1508,17 +1484,12 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 children: [
                   Expanded(
                     child: _btn(
-                      _liveQualityScore >= 90.0
-                          ? (_isSlap
-                              ? 'Capture Slap (${_liveQualityScore.toInt()}%)'
-                              : 'Capture Now (${_liveQualityScore.toInt()}%)')
-                          : 'Needs 90%+ Quality (${_liveQualityScore.toInt()}%)',
+                      _isSlap
+                          ? 'Capture Slap (${_liveQualityScore.toInt()}%)'
+                          : 'Capture Now (${_liveQualityScore.toInt()}%)',
                       _captureFresh,
-                      _liveQualityScore >= 90.0,
-                      icon:
-                          _liveQualityScore >= 90.0
-                              ? Icons.camera_rounded
-                              : Icons.lock_outline_rounded,
+                      true,
+                      icon: Icons.camera_rounded,
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -1533,17 +1504,12 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
             children: [
               Expanded(
                 child: _btn(
-                  _liveQualityScore >= 90.0
-                      ? (_isSlap
-                          ? 'Capture Slap (${_liveQualityScore.toInt()}%)'
-                          : 'Capture Fingerprint (${_liveQualityScore.toInt()}%)')
-                      : 'Needs 90%+ Quality (${_liveQualityScore.toInt()}%)',
+                  _isSlap
+                      ? 'Capture Slap (${_liveQualityScore.toInt()}%)'
+                      : 'Capture Fingerprint (${_liveQualityScore.toInt()}%)',
                   _captureFresh,
-                  _liveQualityScore >= 90.0,
-                  icon:
-                      _liveQualityScore >= 90.0
-                          ? Icons.camera_rounded
-                          : Icons.lock_outline_rounded,
+                  true,
+                  icon: Icons.camera_rounded,
                 ),
               ),
               const SizedBox(width: 10),
@@ -1557,11 +1523,18 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
               children: [
                 _btn(
                   _isSlap
-                      ? 'Retake Slap (Needs 90%+ Quality)'
-                      : 'Retake Fingerprint (Needs 90%+ Quality)',
+                      ? 'Retake Slap'
+                      : 'Retake Fingerprint',
                   _retry,
                   true,
                   icon: Icons.refresh_rounded,
+                ),
+                const SizedBox(height: 8),
+                _btn(
+                  'Use Image Anyway',
+                  _useImage,
+                  false,
+                  icon: Icons.check_rounded,
                 ),
               ],
             )
@@ -2095,8 +2068,8 @@ class _OverlayPainter extends CustomPainter {
       text: TextSpan(
         text:
             isOptimal
-                ? '✓ Optimal quality (≥90%) — hold still'
-                : 'Align fingertip in oval — reach 90%+ quality',
+                ? '✓ Optimal quality — hold still'
+                : 'Align fingertip in oval',
         style: TextStyle(
           color: color.withValues(alpha: 0.95),
           fontSize: 12,

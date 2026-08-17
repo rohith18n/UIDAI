@@ -449,17 +449,17 @@ class OnDeviceQualityService {
     }
 
     // ── 5. Exact Readiness Score Formula ─────────────────────────────────────
-    const double blurMax = 180.0;
-    final double blurNorm = (blurScore.clamp(0.0, blurMax)) / blurMax;
-    const double brightCenter = 130.0;
+    const double blurTarget = 80.0;
+    final double blurNorm = (blurScore.clamp(0.0, blurTarget)) / blurTarget;
+    const double brightCenter = 115.0;
     final double brightNorm = max(
       0.0,
-      1.0 - (meanBrightness - brightCenter).abs() / brightCenter,
+      1.0 - (meanBrightness - brightCenter).abs() / 115.0,
     );
     final double glareNorm = hasGlare ? 0.0 : 1.0;
     final double skinNorm = skinRatioInRoi.clamp(0.0, 1.0);
     final double slotNorm =
-        isSlap ? (activeSlotCount / 4.0) : (isRoiAligned ? 1.0 : 0.5);
+        isSlap ? (activeSlotCount / 4.0) : (isRoiAligned ? 1.0 : 0.6);
 
     double rawScore = 0.0;
     if (isFingerDetected && isRoiAligned) {
@@ -475,16 +475,16 @@ class OnDeviceQualityService {
     rawScore = rawScore.clamp(0.0, 100.0);
     final double score = double.parse(rawScore.toStringAsFixed(1));
 
-    if (issues.isEmpty && isFingerDetected && isRoiAligned && score < 90.0) {
-      issues.add('Quality: ${score.toInt()}% — hold steady to reach 90%+');
+    if (issues.isEmpty && isFingerDetected && isRoiAligned && score < 55.0) {
+      issues.add('Quality: ${score.toInt()}% — align steadily for best capture');
     }
 
     String grade = 'Rejected';
-    if (score >= 90.0 && issues.isEmpty) {
+    if (score >= 75.0 && issues.isEmpty) {
       grade = 'Excellent';
-    } else if (score >= 75.0) {
+    } else if (score >= 55.0) {
       grade = 'Good';
-    } else if (score >= 50.0) {
+    } else if (score >= 35.0) {
       grade = 'Marginal';
     } else {
       grade = 'Rejected';
@@ -494,8 +494,8 @@ class OnDeviceQualityService {
         issues.isNotEmpty
             ? issues.first
             : (isSlap
-                ? '✓ 4 slap fingers optimal (≥90%) — ready to capture'
-                : '✓ Fingerprint optimal (≥90%) — ready to capture');
+                ? '✓ 4 slap fingers aligned — ready to capture'
+                : '✓ Fingerprint clear — ready to capture');
 
     final bool isPassed =
         issues.isEmpty &&
@@ -505,8 +505,8 @@ class OnDeviceQualityService {
         !tooDark &&
         !tooBright &&
         !hasGlare &&
-        score >= 90.0 &&
-        (!isSlap || activeSlotCount == 4);
+        score >= 55.0 &&
+        (!isSlap || activeSlotCount >= 3);
 
     final result = QualityAssessmentResult(
       blurScore: double.parse(blurScore.toStringAsFixed(2)),
