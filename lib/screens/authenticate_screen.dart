@@ -91,7 +91,7 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
           onPressed: () => context.go('/'),
         ),
         title: Text(
-          _isSlap ? 'Slap Authenticate' : 'Authenticate',
+          _isSlap ? '4-Finger Slap Authenticate' : 'Thumb Authenticate',
           style: YS.label(17, w: FontWeight.w700),
         ),
         bottom: PreferredSize(
@@ -122,8 +122,8 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
                   Expanded(
                     child: Text(
                       _isSlap
-                          ? 'Matches all 4 fingers against enrolled slap users in batch'
-                          : 'Matches against all enrolled users in the batch',
+                          ? 'Matches 4 fingers (Index, Middle, Ring, Little) against enrolled slap users'
+                          : 'Matches Thumb against all enrolled users in the batch',
                       style: YS.label(12, color: YS.green),
                     ),
                   ),
@@ -135,26 +135,26 @@ class _AuthenticateScreenState extends State<AuthenticateScreen> {
               value: _region,
               onChanged: (v) => setState(() => _region = v),
             ),
-            if (_isSlap) ...[
-              const SizedBox(height: 16),
-              Text(
-                'HAND',
-                style: YS
-                    .label(11, color: YS.inkLight, w: FontWeight.w700)
-                    .copyWith(letterSpacing: 1.8),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  _handChip('right', 'Right hand'),
-                  const SizedBox(width: 10),
-                  _handChip('left', 'Left hand'),
-                ],
-              ),
-            ],
+            const SizedBox(height: 16),
+            Text(
+              _isSlap ? 'HAND (4 FINGERS)' : 'THUMB POSITION',
+              style: YS
+                  .label(11, color: YS.inkLight, w: FontWeight.w700)
+                  .copyWith(letterSpacing: 1.8),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _handChip('right', _isSlap ? 'Right Hand (4 Fingers)' : 'Right Thumb'),
+                const SizedBox(width: 10),
+                _handChip('left', _isSlap ? 'Left Hand (4 Fingers)' : 'Left Thumb'),
+              ],
+            ),
             const SizedBox(height: 24),
             Text(
-              _isSlap ? 'SLAP CAPTURE' : 'FINGERPRINT CAPTURE',
+              _isSlap
+                  ? '4-FINGER SLAP CAPTURE (INDEX, MIDDLE, RING, LITTLE)'
+                  : 'THUMB CAPTURE',
               style: YS
                   .label(11, color: YS.inkLight, w: FontWeight.w700)
                   .copyWith(letterSpacing: 1.8),

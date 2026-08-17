@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:yellowsense_uidai/services/local_biometric_engine.dart';
 import 'package:yellowsense_uidai/services/ondevice_pipeline_service.dart';
+import 'package:yellowsense_uidai/services/ondevice_quality_service.dart';
 
 void main() {
   group('On-Device Biometric Engine & Matcher Verification', () {
@@ -95,6 +96,43 @@ void main() {
       expect(result['images']?['cropped'], isNotEmpty);
       expect(result['images']?['preprocessed'], isNotEmpty);
       expect(result['images']?['visualization'], isNotEmpty);
+    });
+
+    test('6. Morphometrics: Classifies Thumb vs Slender Finger accurately', () async {
+      // Create broad thumb silhouette
+      final thumbImage = img.Image(width: 320, height: 480);
+      img.fill(thumbImage, color: img.ColorRgb8(20, 20, 20)); // dark background
+      img.fillRect(thumbImage, x1: 80, y1: 100, x2: 240, y2: 380, color: img.ColorRgb8(190, 140, 110)); // broad skin pad (W:160, H:280 -> AR: 0.57)
+
+      final thumbJpg = img.encodeJpg(thumbImage);
+      final thumbQc = OnDeviceQualityService.evaluateYPlane(
+        yPlaneBytes: thumbJpg,
+        width: 320,
+        height: 480,
+        bytesPerRow: 320,
+        isSlap: false,
+      );
+
+      expect(thumbQc.isThumb, isTrue);
+      expect(thumbQc.digitType, equals('thumb'));
+
+      // Create slender index/little finger silhouette
+      final slenderImage = img.Image(width: 320, height: 480);
+      img.fill(slenderImage, color: img.ColorRgb8(20, 20, 20));
+      img.fillRect(slenderImage, x1: 130, y1: 100, x2: 190, y2: 380, color: img.ColorRgb8(190, 140, 110)); // narrow finger (W:60, H:280 -> AR: 0.21)
+
+      final slenderJpg = img.encodeJpg(slenderImage);
+      final slenderQc = OnDeviceQualityService.evaluateYPlane(
+        yPlaneBytes: slenderJpg,
+        width: 320,
+        height: 480,
+        bytesPerRow: 320,
+        isSlap: false,
+      );
+
+      expect(slenderQc.isThumb, isFalse);
+      expect(slenderQc.digitType, equals('slender_finger'));
+      expect(slenderQc.issues.any((s) => s.contains('Slender finger detected')), isTrue);
     });
   });
 }

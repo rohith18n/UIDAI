@@ -116,8 +116,8 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
     ).animate(CurvedAnimation(parent: _scanCtrl, curve: Curves.easeInOut));
     _guidance =
         _isSlap
-            ? 'Position 4 fingers flat inside guide — tap Capture'
-            : 'Position finger inside oval — tap screen to focus & Capture';
+            ? 'Position 4 fingers (Index to Little) flat inside guide — tap Capture'
+            : 'Position Thumb flat inside oval — tap screen to focus & Capture';
   }
 
   @override
@@ -283,7 +283,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
         _lastPassTime = null;
         _pollAttempts = 0;
         _guidance =
-            _isSlap ? 'Place your hand in view' : 'Place finger in the oval';
+            _isSlap ? 'Place 4 fingers (Index to Little) in view' : 'Place Thumb in the oval';
         _guidanceColor = Colors.white60;
         _focusing = false;
         _tipsVisible = true;
@@ -858,7 +858,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
       children: [
         Flexible(
           child: Text(
-            _isSlap ? 'SLAP CAPTURE' : 'FINGERPRINT',
+            _isSlap ? '4-FINGER SLAP CAPTURE' : 'THUMB CAPTURE',
             overflow: TextOverflow.ellipsis,
             style: YS
                 .label(10, color: YS.amber, w: FontWeight.w800)
@@ -1505,8 +1505,8 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
               Expanded(
                 child: _btn(
                   _isSlap
-                      ? 'Capture Slap (${_liveQualityScore.toInt()}%)'
-                      : 'Capture Fingerprint (${_liveQualityScore.toInt()}%)',
+                      ? 'Capture 4-Finger Slap (${_liveQualityScore.toInt()}%)'
+                      : 'Capture Thumb (${_liveQualityScore.toInt()}%)',
                   _captureFresh,
                   true,
                   icon: Icons.camera_rounded,
@@ -1524,7 +1524,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 _btn(
                   _isSlap
                       ? 'Retake Slap'
-                      : 'Retake Fingerprint',
+                      : 'Retake Thumb',
                   _retry,
                   true,
                   icon: Icons.refresh_rounded,
@@ -1543,7 +1543,7 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
               children: [
                 Expanded(
                   child: _btn(
-                    'Use Fingerprint',
+                    _isSlap ? 'Use 4-Finger Slap' : 'Use Thumb',
                     _useImage,
                     true,
                     icon: Icons.check_rounded,
@@ -1619,14 +1619,14 @@ class _FingerprintCameraWidgetState extends State<FingerprintCameraWidget>
                 _tip(
                   Icons.zoom_in_rounded,
                   _isSlap
-                      ? 'Use zoom slider so all four fingers fill the slots'
-                      : 'Use zoom slider to fill the oval with your finger — 2–3× works best',
+                      ? 'Use zoom slider so all 4 fingers (Index to Little) fill the slots'
+                      : 'Use zoom slider so your thumb fills the oval — 2–3× works best',
                 ),
                 _tip(
                   Icons.pan_tool_rounded,
                   _isSlap
-                      ? 'Hold your hand steady and flat, fingers slightly apart'
-                      : 'Follow the arrows to centre your finger in the oval',
+                      ? 'Use 4 FINGERS only (Index, Middle, Ring, Little) — do not include thumb'
+                      : 'Use THUMB only: Align your thumb pad flat and steady in the oval',
                 ),
               ],
             ),
@@ -2068,8 +2068,8 @@ class _OverlayPainter extends CustomPainter {
       text: TextSpan(
         text:
             isOptimal
-                ? '✓ Optimal quality — hold still'
-                : 'Align fingertip in oval',
+                ? '✓ Thumb aligned — hold still'
+                : 'Align Thumb flat in oval',
         style: TextStyle(
           color: color.withValues(alpha: 0.95),
           fontSize: 12,
@@ -2151,7 +2151,7 @@ class _SlapOverlayPainter extends CustomPainter {
         text:
             isOptimal
                 ? '✓ All 4 fingers aligned in slots — hold still'
-                : 'Align all 4 fingers of ${handSide == 'left' ? 'Left' : 'Right'} hand in slots',
+                : 'Align 4 fingers (${handSide == 'left' ? 'Left: Little, Ring, Middle, Index' : 'Right: Index, Middle, Ring, Little'}) in slots',
         style: TextStyle(
           color: color.withValues(alpha: 0.95),
           fontSize: 12,

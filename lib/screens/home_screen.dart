@@ -108,12 +108,12 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   Tab(child: Row(mainAxisSize: MainAxisSize.min, children: [
                     Icon(Icons.fingerprint_rounded, size: 16),
                     SizedBox(width: 6),
-                    Text('Single'),
+                    Text('Thumb'),
                   ])),
                   Tab(child: Row(mainAxisSize: MainAxisSize.min, children: [
                     Icon(Icons.back_hand_rounded, size: 16),
                     SizedBox(width: 6),
-                    Text('Slap'),
+                    Text('4-Finger Slap'),
                   ])),
                 ],
               ),
@@ -130,9 +130,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                 child: Row(children: [
-                  _statCard(_mode == CaptureMode.slap ? '4×' : '5',
-                      _mode == CaptureMode.slap ? 'Fingers' : 'AI Models',
-                      _mode == CaptureMode.slap ? Icons.pan_tool_rounded : Icons.memory_rounded),
+                  _statCard(_mode == CaptureMode.slap ? '4×' : 'Thumb',
+                      _mode == CaptureMode.slap ? 'Fingers' : 'Biometric',
+                      _mode == CaptureMode.slap ? Icons.pan_tool_rounded : Icons.fingerprint_rounded),
                   const SizedBox(width: 10),
                   _statCard('1:N', 'Auth', Icons.groups_rounded),
                   const SizedBox(width: 10),
@@ -154,7 +154,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     Expanded(child: _BigCard(
                       icon: Icons.fingerprint_rounded,
                       label: 'Enroll',
-                      sub: _mode == CaptureMode.slap ? 'Register 4 fingers' : 'Register user',
+                      sub: _mode == CaptureMode.slap ? 'Register 4 fingers' : 'Register thumb',
                       color: YS.amber,
                       bg: YS.amberSoft,
                       onTap: () => context.go('/enroll', extra: _mode),
@@ -163,7 +163,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     Expanded(child: _BigCard(
                       icon: Icons.how_to_reg_rounded,
                       label: 'Authenticate',
-                      sub: _mode == CaptureMode.slap ? 'Slap 1:N match' : '1:N matching',
+                      sub: _mode == CaptureMode.slap ? 'Slap 4-finger 1:N' : 'Thumb 1:N match',
                       color: YS.green,
                       bg: YS.greenBg,
                       onTap: () => context.go('/authenticate', extra: _mode),
@@ -174,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     Expanded(child: _BigCard(
                       icon: Icons.verified_rounded,
                       label: 'Verify',
-                      sub: _mode == CaptureMode.slap ? 'Slap 1:1 identity' : '1:1 identity',
+                      sub: _mode == CaptureMode.slap ? 'Slap 4-finger 1:1' : 'Thumb 1:1 identity',
                       color: YS.blue,
                       bg: YS.blueBg,
                       onTap: () => context.go('/verify', extra: _mode),
@@ -183,7 +183,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     Expanded(child: _BigCard(
                       icon: Icons.biotech_rounded,
                       label: 'Pipeline',
-                      sub: _mode == CaptureMode.slap ? 'Slap visualizer' : 'Live visualizer',
+                      sub: _mode == CaptureMode.slap ? '4-Finger visualizer' : 'Thumb visualizer',
                       color: YS.orange,
                       bg: YS.orangeBg,
                       onTap: () => context.go(
@@ -278,17 +278,17 @@ class _HeroBanner extends StatelessWidget {
               style: YS.label(11, color: Colors.white, w: FontWeight.w600)),
         ),
         const SizedBox(height: 14),
-        Text(isSlap ? 'Multi-Finger\nSlap Auth' : 'Contactless\nFingerprint Auth',
+        Text(isSlap ? 'Multi-Finger\n4-Finger Slap Auth' : 'Contactless\nThumb Biometric Auth',
             style: YS.display(28, color: Colors.white, w: FontWeight.w800)),
         const SizedBox(height: 8),
         Text(isSlap
-                ? 'Capture all 4 fingers at once — faster enrollment & stronger matching'
-                : 'AI-powered biometric authentication\nfor Aadhaar — no scanner needed',
+                ? 'Capture all 4 fingers at once (Index, Middle, Ring, Little) — faster & stronger matching'
+                : 'AI-powered contactless thumb authentication for Aadhaar — no scanner needed',
             style: YS.label(13, color: Colors.white.withValues(alpha: 0.85))),
         const SizedBox(height: 20),
         Wrap(spacing: 8, runSpacing: 8, children: [
           _chip('YOLO'), _chip('U²Net'), _chip('ZeroDCE'),
-          _chip('MinutiaeNet'), _chip(isSlap ? 'Aggregate' : 'MCC'),
+          _chip('MinutiaeNet'), _chip(isSlap ? '4-Finger Slap' : 'Thumb MCC'),
         ]),
       ]),
     );

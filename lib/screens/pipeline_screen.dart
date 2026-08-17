@@ -72,7 +72,7 @@ class _PipelineScreenState extends State<PipelineScreen> {
           onPressed: () => context.go('/'),
         ),
         title: Text(
-          'Pipeline Visualizer',
+          'Thumb Pipeline Visualizer',
           style: YS.label(17, w: FontWeight.w700),
         ),
         bottom: PreferredSize(
@@ -101,8 +101,8 @@ class _PipelineScreenState extends State<PipelineScreen> {
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
-                    'Capture a fingerprint to see every processing step — '
-                    'from raw image to minutiae extraction — in real time.',
+                    'Capture Thumb pad to see every processing step — '
+                    'from raw image to distal phalanx crop, contextual FIR, and minutiae extraction — in real time.',
                     style: YS.label(12, color: YS.amberDeep),
                   ),
                 ),

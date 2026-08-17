@@ -207,7 +207,7 @@ class _VerifyScreenState extends State<VerifyScreen> {
           onPressed: () => context.go('/'),
         ),
         title: Text(
-          _isSlap ? 'Slap Verify' : 'Verify Identity',
+          _isSlap ? '4-Finger Slap Verify' : 'Thumb Verify',
           style: YS.label(17, w: FontWeight.w700),
         ),
         bottom: PreferredSize(
@@ -238,8 +238,8 @@ class _VerifyScreenState extends State<VerifyScreen> {
                   Expanded(
                     child: Text(
                       _isSlap
-                          ? 'Verifies slap fingerprint against a specific Aadhaar UID'
-                          : 'Verifies fingerprint against a specific Aadhaar UID',
+                          ? 'Verifies 4-finger slap (Index, Middle, Ring, Little) against a specific Aadhaar UID'
+                          : 'Verifies Thumb biometric against a specific Aadhaar UID',
                       style: YS.label(12, color: YS.blue),
                     ),
                   ),
@@ -264,26 +264,26 @@ class _VerifyScreenState extends State<VerifyScreen> {
                 ),
               ),
             ),
-            if (_isSlap) ...[
-              const SizedBox(height: 16),
-              Text(
-                'HAND',
-                style: YS
-                    .label(11, color: YS.inkLight, w: FontWeight.w700)
-                    .copyWith(letterSpacing: 1.8),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  _handChip('right', 'Right hand', YS.blueBg, YS.blue),
-                  const SizedBox(width: 10),
-                  _handChip('left', 'Left hand', YS.blueBg, YS.blue),
-                ],
-              ),
-            ],
+            const SizedBox(height: 16),
+            Text(
+              _isSlap ? 'HAND (4 FINGERS)' : 'THUMB POSITION',
+              style: YS
+                  .label(11, color: YS.inkLight, w: FontWeight.w700)
+                  .copyWith(letterSpacing: 1.8),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _handChip('right', _isSlap ? 'Right Hand (4 Fingers)' : 'Right Thumb', YS.blueBg, YS.blue),
+                const SizedBox(width: 10),
+                _handChip('left', _isSlap ? 'Left Hand (4 Fingers)' : 'Left Thumb', YS.blueBg, YS.blue),
+              ],
+            ),
             const SizedBox(height: 24),
             Text(
-              _isSlap ? 'SLAP CAPTURE' : 'FINGERPRINT CAPTURE',
+              _isSlap
+                  ? '4-FINGER SLAP CAPTURE (INDEX, MIDDLE, RING, LITTLE)'
+                  : 'THUMB CAPTURE',
               style: YS
                   .label(11, color: YS.inkLight, w: FontWeight.w700)
                   .copyWith(letterSpacing: 1.8),
@@ -1270,7 +1270,10 @@ class _QcScreenState extends State<QcScreen> {
           icon: const Icon(Icons.arrow_back_rounded),
           onPressed: () => context.go('/'),
         ),
-        title: Text('QC Pipeline', style: YS.label(17, w: FontWeight.w700)),
+        title: Text(
+          _isSlap ? '4-Finger Slap QC' : 'Thumb QC Pipeline',
+          style: YS.label(17, w: FontWeight.w700),
+        ),
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(1),
           child: Container(height: 1, color: YS.stroke),
@@ -1281,23 +1284,21 @@ class _QcScreenState extends State<QcScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (_isSlap) ...[
-              Text(
-                'HAND',
-                style: YS
-                    .label(11, color: YS.inkLight, w: FontWeight.w700)
-                    .copyWith(letterSpacing: 1.8),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  _qcHandChip('right', 'Right hand'),
-                  const SizedBox(width: 10),
-                  _qcHandChip('left', 'Left hand'),
-                ],
-              ),
-              const SizedBox(height: 16),
-            ],
+            Text(
+              _isSlap ? 'HAND (4 FINGERS)' : 'THUMB POSITION',
+              style: YS
+                  .label(11, color: YS.inkLight, w: FontWeight.w700)
+                  .copyWith(letterSpacing: 1.8),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _qcHandChip('right', _isSlap ? 'Right Hand (4 Fingers)' : 'Right Thumb'),
+                const SizedBox(width: 10),
+                _qcHandChip('left', _isSlap ? 'Left Hand (4 Fingers)' : 'Left Thumb'),
+              ],
+            ),
+            const SizedBox(height: 16),
             FingerprintCameraWidget(
               onImageCaptured: _run,
               onRetake:

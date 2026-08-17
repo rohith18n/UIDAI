@@ -56,7 +56,7 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
       backgroundColor: YS.bg,
       appBar: AppBar(
         leading: IconButton(icon: const Icon(Icons.arrow_back_rounded), onPressed: () => context.go('/')),
-        title: Text('Slap Pipeline', style: YS.label(17, w: FontWeight.w700)),
+        title: Text('4-Finger Slap Pipeline', style: YS.label(17, w: FontWeight.w700)),
         bottom: PreferredSize(preferredSize: const Size.fromHeight(1),
             child: Container(height: 1, color: YS.stroke)),
       ),
@@ -72,19 +72,19 @@ class _SlapPipelineScreenState extends State<SlapPipelineScreen> {
               const Icon(Icons.auto_awesome_rounded, color: YS.blue, size: 16),
               const SizedBox(width: 8),
               Expanded(child: Text(
-                  'Runs full slap pipeline: detect 4 fingers → liveness → segmentation → enhancement → minutiae → composite view',
+                  'Runs 4-finger slap pipeline: detect Index, Middle, Ring, Little → liveness → segmentation → enhancement → minutiae → composite view',
                   style: YS.label(12, color: YS.blue))),
             ]),
           ),
           const SizedBox(height: 16),
-          Text('HAND',
+          Text('HAND (4 FINGERS)',
               style: YS.label(11, color: YS.inkLight, w: FontWeight.w700)
                   .copyWith(letterSpacing: 1.8)),
           const SizedBox(height: 8),
           Row(children: [
-            _handChip('right', 'Right hand'),
+            _handChip('right', 'Right Hand (4 Fingers)'),
             const SizedBox(width: 10),
-            _handChip('left', 'Left hand'),
+            _handChip('left', 'Left Hand (4 Fingers)'),
           ]),
           const SizedBox(height: 20),
           FingerprintCameraWidget(

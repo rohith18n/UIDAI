@@ -597,12 +597,12 @@ class OnDevicePipelineService {
     const dx = [0, 1, 1, 1, 0, -1, -1, -1];
     const dy = [-1, -1, 0, 1, 1, 1, 0, -1];
 
-    const int margin = 10;
+    const int margin = 6;
     for (int y = margin; y < h - margin; y++) {
       for (int x = margin; x < w - margin; x++) {
         final int idx = y * w + x;
-        // Boundary gating: reject minutiae within 10px of border
-        if (skeleton[idx] != 1 || distToBg[idx] < 10.0) continue;
+        // Boundary gating: reject minutiae within 6px of border
+        if (skeleton[idx] != 1 || distToBg[idx] < 6.0) continue;
 
         final List<int> p = List.filled(8, 0);
         int neighborCount = 0;
@@ -651,12 +651,12 @@ class OnDevicePipelineService {
             pathLen++;
           }
 
-          if (pathLen >= 3) {
+          if (pathLen >= 2) {
             final double angle = atan2((currY - y).toDouble(), (currX - x).toDouble());
             final double cx = w / 2.0;
             final double cy = h / 2.0;
             final double normDist = sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
-            final double qual = (0.98 - normDist * 0.15).clamp(0.75, 0.98);
+            final double qual = (0.98 - normDist * 0.12).clamp(0.78, 0.98);
 
             rawCandidates.add({
               'x': x,
@@ -712,7 +712,7 @@ class OnDevicePipelineService {
               branchAngles.add(atan2((currY - y).toDouble(), (currX - x).toDouble()));
             }
 
-            if (shortestBranch >= 3) {
+            if (shortestBranch >= 2) {
               double sumCos = 0.0;
               double sumSin = 0.0;
               for (final a in branchAngles) {
@@ -723,7 +723,7 @@ class OnDevicePipelineService {
               final double cx = w / 2.0;
               final double cy = h / 2.0;
               final double normDist = sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / (w / 2.0);
-              final double qual = (0.98 - normDist * 0.15).clamp(0.75, 0.98);
+              final double qual = (0.98 - normDist * 0.12).clamp(0.78, 0.98);
 
               rawCandidates.add({
                 'x': x,
@@ -741,8 +741,8 @@ class OnDevicePipelineService {
     // 4. Topological Filter: Suppress false opposing endings and dense noise clusters
     final List<Map<String, dynamic>> filtered = _filterSpuriousMinutiae(rawCandidates);
 
-    // 5. Uniform Multi-Grid Spatial NMS (target 35-50 verified minutiae)
-    return _uniformSpatialNms(filtered, w, h, 50);
+    // 5. Uniform Multi-Grid Spatial NMS (target up to 85 verified minutiae)
+    return _uniformSpatialNms(filtered, w, h, 85);
   }
 
   static List<Map<String, dynamic>> _filterSpuriousMinutiae(
@@ -770,19 +770,19 @@ class OnDevicePipelineService {
 
         final int dSq = (x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2);
 
-        // 1. Broken ridge artifact: two opposing endings facing each other within 14px
-        if (dSq <= 196 && type1 == 'RIG' && type2 == 'RIG') {
+        // 1. Broken ridge artifact: two opposing endings facing each other within 10px
+        if (dSq <= 100 && type1 == 'RIG' && type2 == 'RIG') {
           double diffAngle = (dir1 - dir2).abs();
           if (diffAngle > pi) diffAngle = (2 * pi - diffAngle);
-          if (diffAngle > pi * 0.70) {
+          if (diffAngle > pi * 0.75) {
             keep[i] = false;
             keep[j] = false;
             break;
           }
         }
 
-        // 2. Overlapping duplicate minutiae within 8px
-        if (dSq <= 64) {
+        // 2. Overlapping duplicate minutiae within 5px
+        if (dSq <= 25) {
           final double q1 = (m1['confidence'] as num?)?.toDouble() ?? 0.0;
           final double q2 = (m2['confidence'] as num?)?.toDouble() ?? 0.0;
           if (q1 >= q2) {
@@ -794,13 +794,13 @@ class OnDevicePipelineService {
         }
 
         // 3. Dense cluster count
-        if (dSq <= 225) { // within 15px
+        if (dSq <= 144) { // within 12px
           clusterCount++;
         }
       }
 
-      // Purge dense noise clusters (> 3 minutiae in 15px radius)
-      if (clusterCount >= 3) {
+      // Purge dense noise clusters (> 4 minutiae in 12px radius)
+      if (clusterCount >= 4) {
         keep[i] = false;
       }
     }
@@ -902,8 +902,8 @@ class OnDevicePipelineService {
     candidates.sort((a, b) => ((b['confidence'] as num?) ?? 0)
         .compareTo((a['confidence'] as num?) ?? 0));
 
-    const int gridCols = 5;
-    const int gridRows = 5;
+    const int gridCols = 6;
+    const int gridRows = 6;
     final double cellW = w / gridCols;
     final double cellH = h / gridRows;
 
@@ -925,9 +925,9 @@ class OnDevicePipelineService {
       }
     }
 
-    final double minDistance = max(10.0, min(w, h) * 0.035);
+    final double minDistance = max(6.0, min(w, h) * 0.024);
     final double minDistSq = minDistance * minDistance;
-    const int maxPerBucket = 5;
+    const int maxPerBucket = 6;
     final List<List<int>> bucketCounts =
         List.generate(gridRows, (_) => List.filled(gridCols, 0));
 

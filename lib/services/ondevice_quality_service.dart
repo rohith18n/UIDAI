@@ -18,6 +18,9 @@ class QualityAssessmentResult {
   final bool isTooClose;
   final bool isRoiAligned;
   final bool isFingerDetected;
+  final bool isThumb;
+  final double digitAspectRatio;
+  final String digitType;
   final int fingerCount;
   final double detectionConf;
   final double offsetX;
@@ -43,6 +46,9 @@ class QualityAssessmentResult {
     required this.isTooClose,
     required this.isRoiAligned,
     required this.isFingerDetected,
+    this.isThumb = true,
+    this.digitAspectRatio = 1.0,
+    this.digitType = 'thumb',
     this.fingerCount = 0,
     this.detectionConf = 0.0,
     this.offsetX = 0.0,
@@ -81,6 +87,9 @@ class QualityAssessmentResult {
     'is_too_close': isTooClose,
     'roi_aligned': isRoiAligned,
     'is_finger_detected': isFingerDetected,
+    'is_thumb': isThumb,
+    'digit_aspect_ratio': digitAspectRatio,
+    'digit_type': digitType,
     'finger_count': fingerCount,
     'detection_conf': detectionConf,
     'offset_x': offsetX,
@@ -255,6 +264,11 @@ class OnDeviceQualityService {
     double totalBrightnessInRoi = 0.0;
     int overexposedCount = 0;
 
+    int minSkinX = effWidth;
+    int maxSkinX = 0;
+    int minSkinY = effHeight;
+    int maxSkinY = 0;
+
     final Uint8List skinMask = Uint8List(effWidth * effHeight);
 
     for (int y = 0; y < effHeight; y += sampleStep) {
@@ -310,6 +324,10 @@ class OnDeviceQualityService {
             skinInRoi++;
             sumSkinRoiX += x;
             sumSkinRoiY += y;
+            if (x < minSkinX) minSkinX = x;
+            if (x > maxSkinX) maxSkinX = x;
+            if (y < minSkinY) minSkinY = y;
+            if (y > maxSkinY) maxSkinY = y;
 
             if (isSlap) {
               for (int i = 0; i < 4; i++) {
@@ -354,6 +372,48 @@ class OnDeviceQualityService {
     // Strict Finger Presence Check: Slap REQUIRES ALL 4 slots filled!
     final bool isFingerDetected =
         isSlap ? (activeSlotCount == 4) : (skinRatioInRoi >= 0.24);
+
+    // ── Morphometric Digit Classification (Thumb vs Slender Digits) ──────────
+    bool isThumb = true;
+    double digitAspectRatio = 1.0;
+    String digitType = 'thumb';
+
+    if (!isSlap && isFingerDetected && skinInRoi > 40 && minSkinX < maxSkinX && minSkinY < maxSkinY) {
+      final double padW = (maxSkinX - minSkinX).toDouble();
+      final double padH = (maxSkinY - minSkinY).toDouble();
+      digitAspectRatio = padH > 0 ? (padW / padH) : 1.0;
+
+      // Measure width across top 35% (apex) vs mid 50%
+      int topSkinCount = 0, midSkinCount = 0;
+      final double topThreshY = minSkinY + padH * 0.35;
+      final double midThreshY = minSkinY + padH * 0.70;
+
+      for (int y = minSkinY; y <= maxSkinY; y += sampleStep) {
+        final int rowOffset = y * effWidth;
+        for (int x = minSkinX; x <= maxSkinX; x += sampleStep) {
+          final int idx = rowOffset + x;
+          if (idx < skinMask.length && skinMask[idx] == 255) {
+            if (y <= topThreshY) {
+              topSkinCount++;
+            } else if (y <= midThreshY) {
+              midSkinCount++;
+            }
+          }
+        }
+      }
+
+      final double apexFullness = midSkinCount > 0 ? (topSkinCount / midSkinCount) : 0.7;
+
+      // Human thumb distal pad: aspect ratio >= 0.52 and broad bulbous apex (fullness >= 0.45).
+      // Slender digits (Index, Middle, Ring, Little): aspect ratio < 0.46 or narrow apex (< 0.42).
+      if (digitAspectRatio < 0.46 || (digitAspectRatio < 0.50 && apexFullness < 0.42)) {
+        isThumb = false;
+        digitType = 'slender_finger';
+      } else {
+        isThumb = true;
+        digitType = 'thumb';
+      }
+    }
 
     // ── 2. Ridge Sharpness & Blur (Computed on verified skin pixels inside ROI) ─
     final double currentBlurThreshold =
@@ -406,26 +466,31 @@ class OnDeviceQualityService {
     if (!isFingerDetected) {
       if (isSlap) {
         if (activeSlotCount == 0) {
-          issues.add('Place 4 fingers flat inside guide slots');
+          issues.add('Place 4 fingers flat inside guide slots (Index, Middle, Ring, Little)');
         } else {
           issues.add(
-            'Place all 4 fingers inside slots ($activeSlotCount/4 detected)',
+            'Place all 4 fingers inside slots ($activeSlotCount/4 detected — Index to Little)',
           );
         }
       } else {
-        issues.add('Place fingertip inside oval guide');
+        issues.add('Place Thumb pad flat inside oval guide');
       }
     } else {
+      if (!isSlap && !isThumb) {
+        issues.add('⚠️ Slender finger detected — please place your Thumb pad flat 👍');
+      }
       if (isSlap && activeSlotCount < 4) {
         issues.add(
-          'Place all 4 fingers inside slots ($activeSlotCount/4 detected)',
+          'Place all 4 fingers inside slots ($activeSlotCount/4 detected — Index to Little)',
         );
       }
       if (!isRoiAligned && roiGuidance.isNotEmpty) {
         issues.add(roiGuidance);
       }
       if (isBlurry) {
-        issues.add('Finger is blurry — tap screen to focus 🔍');
+        issues.add(isSlap
+            ? 'Fingers are blurry — tap screen to focus 🔍'
+            : 'Thumb is blurry — tap screen to focus 🔍');
       }
       if (tooDark) {
         issues.add('Image is darker — open flash 💡');
@@ -439,12 +504,12 @@ class OnDeviceQualityService {
       if (isTooFar) {
         issues.add(
           isSlap
-              ? 'Move hand closer to fill all 4 slots'
-              : 'Move finger closer to fill oval 🔍',
+              ? 'Move hand closer to fill all 4 slots (Index to Little)'
+              : 'Move Thumb closer to fill oval 🔍',
         );
       }
       if (isTooClose) {
-        issues.add('Move finger slightly back');
+        issues.add(isSlap ? 'Move hand slightly back' : 'Move Thumb slightly back');
       }
     }
 
@@ -460,6 +525,7 @@ class OnDeviceQualityService {
     final double skinNorm = skinRatioInRoi.clamp(0.0, 1.0);
     final double slotNorm =
         isSlap ? (activeSlotCount / 4.0) : (isRoiAligned ? 1.0 : 0.6);
+    final double thumbBonus = (!isSlap && !isThumb) ? -25.0 : 0.0;
 
     double rawScore = 0.0;
     if (isFingerDetected && isRoiAligned) {
@@ -468,9 +534,10 @@ class OnDeviceQualityService {
           (brightNorm * 25.0) +
           (glareNorm * 15.0) +
           (skinNorm * 10.0) +
-          (slotNorm * 15.0);
+          (slotNorm * 15.0) +
+          thumbBonus;
     } else if (isFingerDetected) {
-      rawScore = (blurNorm * 25.0) + (brightNorm * 20.0) + (slotNorm * 20.0);
+      rawScore = (blurNorm * 25.0) + (brightNorm * 20.0) + (slotNorm * 20.0) + thumbBonus;
     }
     rawScore = rawScore.clamp(0.0, 100.0);
     final double score = double.parse(rawScore.toStringAsFixed(1));
@@ -495,12 +562,13 @@ class OnDeviceQualityService {
             ? issues.first
             : (isSlap
                 ? '✓ 4 slap fingers aligned — ready to capture'
-                : '✓ Fingerprint clear — ready to capture');
+                : '✓ Thumb clear — ready to capture');
 
     final bool isPassed =
         issues.isEmpty &&
         isFingerDetected &&
         isRoiAligned &&
+        (isSlap || isThumb) &&
         !isBlurry &&
         !tooDark &&
         !tooBright &&
@@ -522,6 +590,9 @@ class OnDeviceQualityService {
       isTooClose: isTooClose,
       isRoiAligned: isRoiAligned,
       isFingerDetected: isFingerDetected,
+      isThumb: isThumb,
+      digitAspectRatio: double.parse(digitAspectRatio.toStringAsFixed(2)),
+      digitType: digitType,
       fingerCount: isSlap ? activeSlotCount : (isFingerDetected ? 1 : 0),
       detectionConf: double.parse((skinRatioInRoi * 0.98).toStringAsFixed(4)),
       offsetX: double.parse(offsetX.toStringAsFixed(1)),

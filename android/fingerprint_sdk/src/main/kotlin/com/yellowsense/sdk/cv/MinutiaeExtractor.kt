@@ -31,7 +31,7 @@ object MinutiaeExtractor {
     fun extractMinutiae(
         preprocessedFIR: Bitmap,
         originalCrop: Bitmap? = null,
-        maxPoints: Int = 50
+        maxPoints: Int = 85
     ): List<MinutiaPoint> {
         val width = preprocessedFIR.width
         val height = preprocessedFIR.height

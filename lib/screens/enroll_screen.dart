@@ -124,7 +124,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
           onPressed: () => context.go('/'),
         ),
         title: Text(
-          _isSlap ? 'Slap Enroll' : 'Enroll User',
+          _isSlap ? '4-Finger Slap Enroll' : 'Thumb Enroll',
           style: YS.label(17, w: FontWeight.w700),
         ),
         bottom: PreferredSize(
@@ -139,7 +139,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _badge(
-              _isSlap ? 'SLAP ENROLLMENT' : 'FINGERPRINT ENROLLMENT',
+              _isSlap ? '4-FINGER SLAP ENROLLMENT' : 'THUMB ENROLLMENT',
               _isSlap ? YS.blue : YS.amber,
               _isSlap ? YS.blueBg : YS.amberSoft,
             ),
@@ -162,26 +162,26 @@ class _EnrollScreenState extends State<EnrollScreen> {
               value: _region,
               onChanged: (v) => setState(() => _region = v),
             ),
-            if (_isSlap) ...[
-              const SizedBox(height: 16),
-              Text(
-                'HAND',
-                style: YS
-                    .label(11, color: YS.inkLight, w: FontWeight.w700)
-                    .copyWith(letterSpacing: 1.8),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  _handChip('right', 'Right hand'),
-                  const SizedBox(width: 10),
-                  _handChip('left', 'Left hand'),
-                ],
-              ),
-            ],
+            const SizedBox(height: 16),
+            Text(
+              _isSlap ? 'HAND (4 FINGERS)' : 'THUMB POSITION',
+              style: YS
+                  .label(11, color: YS.inkLight, w: FontWeight.w700)
+                  .copyWith(letterSpacing: 1.8),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                _handChip('right', _isSlap ? 'Right Hand (4 Fingers)' : 'Right Thumb'),
+                const SizedBox(width: 10),
+                _handChip('left', _isSlap ? 'Left Hand (4 Fingers)' : 'Left Thumb'),
+              ],
+            ),
             const SizedBox(height: 24),
             Text(
-              _isSlap ? 'SLAP CAPTURE' : 'FINGERPRINT CAPTURE',
+              _isSlap
+                  ? '4-FINGER SLAP CAPTURE (INDEX, MIDDLE, RING, LITTLE)'
+                  : 'THUMB CAPTURE',
               style: YS
                   .label(11, color: YS.inkLight, w: FontWeight.w700)
                   .copyWith(letterSpacing: 1.8),
@@ -245,8 +245,8 @@ class _EnrollScreenState extends State<EnrollScreen> {
                         SnackBar(
                           content: Text(
                             _isSlap
-                                ? 'Slap captured ✓'
-                                : 'Fingerprint captured ✓',
+                                ? '4-Finger Slap captured ✓'
+                                : 'Thumb captured ✓',
                             style: YS.label(13),
                           ),
                           backgroundColor: YS.green,
@@ -497,8 +497,8 @@ class _EnrollScreenState extends State<EnrollScreen> {
     String msg =
         ok
             ? (_isSlap
-                ? '$fingerCount Finger(s) Enrolled Successfully!'
-                : 'Enrolled Successfully!')
+                ? '$fingerCount Fingers Enrolled (Index to Little)'
+                : 'Thumb Enrolled Successfully!')
             : (r['error'] ??
                 r['message'] ??
                 r['guidance'] ??
